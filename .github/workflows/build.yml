@@ -49,10 +49,10 @@ jobs:
               id 'com.android.application'
           }
           android {
-              namespace 'com.example.boardoverlay'
+              namespace 'com.example.Annot8'
               compileSdk 34
               defaultConfig {
-                  applicationId 'com.example.boardoverlay'
+                  applicationId 'com.example.Annot8'
                   minSdk 21
                   targetSdk 33
                   versionCode 1
