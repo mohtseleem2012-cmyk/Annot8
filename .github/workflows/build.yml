@@ -29,7 +29,7 @@ jobs:
                   mavenCentral()
               }
           }
-          rootProject.name = "BoardOverlay"
+          rootProject.name = "Annot8"
           include ':app'
           EOF
 
