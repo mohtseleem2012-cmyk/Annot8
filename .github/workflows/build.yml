@@ -253,7 +253,7 @@ jobs:
               <application
                   android:icon="@mipmap/ic_launcher"
                   android:label="Annot8"
-                  android:theme="@android:style/Theme.DeviceDefault.Light">
+                  android:theme="@android:style/Theme.DeviceDefault">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -270,10 +270,12 @@ jobs:
 
           import android.app.Activity;
           import android.content.Intent;
+          import android.graphics.drawable.GradientDrawable;
           import android.net.Uri;
           import android.os.Build;
           import android.os.Bundle;
           import android.provider.Settings;
+          import android.view.Gravity;
           import android.view.View;
           import android.widget.Button;
           import android.widget.LinearLayout;
@@ -281,25 +283,50 @@ jobs:
           import android.widget.Toast;
 
           public class MainActivity extends Activity {
+              private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density); }
+
+              private Button makeButton(String label, int color) {
+                  Button b = new Button(this);
+                  b.setText(label);
+                  b.setAllCaps(false);
+                  b.setTextColor(0xFFFFFFFF);
+                  b.setTextSize(16);
+                  GradientDrawable g = new GradientDrawable();
+                  g.setColor(color);
+                  g.setCornerRadius(dp(14));
+                  b.setBackground(g);
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(220), dp(52));
+                  p.setMargins(0, dp(10), 0, 0);
+                  b.setLayoutParams(p);
+                  return b;
+              }
+
               @Override
               protected void onCreate(Bundle b) {
                   super.onCreate(b);
                   LinearLayout l = new LinearLayout(this);
                   l.setOrientation(LinearLayout.VERTICAL);
-                  l.setPadding(40, 40, 40, 40);
+                  l.setGravity(Gravity.CENTER_HORIZONTAL);
+                  l.setBackgroundColor(0xFF121417);
+                  l.setPadding(dp(24), dp(40), dp(24), dp(24));
+                  TextView title = new TextView(this);
+                  title.setText("Annot8");
+                  title.setTextSize(32);
+                  title.setTextColor(0xFFFFFFFF);
                   TextView t = new TextView(this);
-                  t.setTextSize(18);
-                  t.setText("Annot8\n\nTap Start. The first time, allow Display over other apps, then come back and tap Start again.\n\nA toolbar appears on the left. Draw over any app. Tap Touch to use the app underneath, and Draw to write again.");
-                  Button start = new Button(this);
-                  start.setText("Start");
+                  t.setTextSize(16);
+                  t.setTextColor(0xFFB8C2CC);
+                  t.setPadding(0, dp(16), 0, dp(16));
+                  t.setText("Draw over any app.\n\nTap Start. The first time, allow Display over other apps, then come back and tap Start again.\n\nDrag the handle at the top of the toolbar to move it, and tap the handle to fold it. Tap Touch to use the app underneath, and Draw to write again.");
+                  Button start = makeButton("Start", 0xFF4DA3FF);
                   start.setOnClickListener(new View.OnClickListener() {
                       public void onClick(View v) { startOverlay(); }
                   });
-                  Button stop = new Button(this);
-                  stop.setText("Stop");
+                  Button stop = makeButton("Stop", 0xFF3A4048);
                   stop.setOnClickListener(new View.OnClickListener() {
                       public void onClick(View v) { stopService(new Intent(MainActivity.this, OverlayService.class)); }
                   });
+                  l.addView(title);
                   l.addView(t);
                   l.addView(start);
                   l.addView(stop);
@@ -343,14 +370,25 @@ jobs:
               private Stroke cur;
               private int color = Color.RED;
               private int tool = 0; // 0 pen, 1 marker, 2 eraser
+              private final float[] mn;
+              private final float[] mx;
+              private final float[] fr = { 0.15f, 0.2f, 0.25f };
 
               public DrawView(Context c) {
                   super(c);
+                  float d = c.getResources().getDisplayMetrics().density;
+                  mn = new float[] { 1 * d, 6 * d, 8 * d };
+                  mx = new float[] { 24 * d, 48 * d, 70 * d };
                   setLayerType(View.LAYER_TYPE_HARDWARE, null);
               }
 
               public void setTool(int t) { tool = t; }
+              public int getTool() { return tool; }
               public void setColor(int c) { color = c; if (tool == 2) tool = 0; }
+              public int getColor() { return color; }
+              public float getFrac(int t) { return fr[t]; }
+              public void setFrac(int t, float f) { fr[t] = Math.max(0f, Math.min(1f, f)); }
+              public float widthPx() { return mn[tool] + fr[tool] * (mx[tool] - mn[tool]); }
               public void undo() { if (!strokes.isEmpty()) { strokes.remove(strokes.size() - 1); invalidate(); } }
               public void clear() { strokes.clear(); invalidate(); }
 
@@ -359,16 +397,14 @@ jobs:
                   p.setStyle(Paint.Style.STROKE);
                   p.setStrokeCap(Paint.Cap.ROUND);
                   p.setStrokeJoin(Paint.Join.ROUND);
+                  p.setStrokeWidth(widthPx());
                   if (tool == 0) {
                       p.setColor(color);
-                      p.setStrokeWidth(6);
                   } else if (tool == 1) {
                       p.setColor((color & 0x00FFFFFF) | 0x66000000);
-                      p.setStrokeWidth(30);
                   } else {
                       p.setColor(Color.TRANSPARENT);
                       p.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
-                      p.setStrokeWidth(44);
                   }
                   return p;
               }
@@ -413,30 +449,59 @@ jobs:
           import android.app.NotificationManager;
           import android.app.Service;
           import android.content.Intent;
+          import android.content.res.ColorStateList;
+          import android.graphics.Canvas;
           import android.graphics.Color;
+          import android.graphics.Paint;
           import android.graphics.PixelFormat;
+          import android.graphics.drawable.GradientDrawable;
           import android.os.Build;
           import android.os.IBinder;
           import android.view.Gravity;
+          import android.view.MotionEvent;
           import android.view.View;
           import android.view.ViewGroup;
           import android.view.WindowManager;
           import android.widget.Button;
           import android.widget.LinearLayout;
-          import java.util.ArrayList;
+          import android.widget.SeekBar;
+          import android.widget.TextView;
 
           public class OverlayService extends Service {
               private WindowManager wm;
               private DrawView dv;
               private LinearLayout bar;
+              private LinearLayout picker;
               private WindowManager.LayoutParams dvp;
               private WindowManager.LayoutParams barp;
+              private int type;
               private Button touchBtn;
+              private Button colorBtn;
+              private SeekBar sizeBar;
+              private Dot dot;
+              private final Button[] toolBtns = new Button[3];
               private boolean touchMode = false;
               private boolean collapsed = false;
-              private final ArrayList<Button> buttons = new ArrayList<Button>();
-              private final int[] colors = { Color.RED, Color.BLUE, Color.rgb(0, 150, 60), Color.YELLOW, Color.BLACK, Color.WHITE };
-              private int ci = 0;
+
+              class Dot extends View {
+                  private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  Dot() { super(OverlayService.this); }
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      float cx = getWidth() / 2f, cy = getHeight() / 2f;
+                      float r = Math.min(dv.widthPx() / 2f, Math.min(cx, cy) - dp(2));
+                      if (dv.getTool() == 2) {
+                          p.setStyle(Paint.Style.STROKE);
+                          p.setStrokeWidth(dp(2));
+                          p.setColor(0xFFFFFFFF);
+                      } else {
+                          p.setStyle(Paint.Style.FILL);
+                          int col = dv.getColor();
+                          p.setColor(dv.getTool() == 1 ? ((col & 0xFFFFFF) | 0x99000000) : col);
+                      }
+                      c.drawCircle(cx, cy, Math.max(r, dp(1)), p);
+                  }
+              }
 
               @Override
               public IBinder onBind(Intent i) { return null; }
@@ -449,7 +514,7 @@ jobs:
                   super.onCreate();
                   startForeground(1, makeNotification());
                   wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-                  int type = Build.VERSION.SDK_INT >= 26
+                  type = Build.VERSION.SDK_INT >= 26
                           ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                           : WindowManager.LayoutParams.TYPE_PHONE;
 
@@ -464,70 +529,141 @@ jobs:
 
                   bar = new LinearLayout(this);
                   bar.setOrientation(LinearLayout.VERTICAL);
-                  bar.setBackgroundColor(0xCC2B2E33);
-                  bar.setPadding(dp(4), dp(4), dp(4), dp(4));
+                  GradientDrawable bg = round(0x99202428, dp(28));
+                  bg.setStroke(dp(1), 0x33FFFFFF);
+                  bar.setBackground(bg);
+                  bar.setPadding(dp(6), dp(6), dp(6), dp(6));
                   barp = new WindowManager.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, type,
                           WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                           PixelFormat.TRANSLUCENT);
-                  barp.gravity = Gravity.LEFT | Gravity.CENTER_VERTICAL;
+                  barp.gravity = Gravity.TOP | Gravity.LEFT;
+                  barp.x = dp(8);
+                  barp.y = dp(40);
 
-                  addMenuButton();
-                  touchBtn = addButton("Touch", new Runnable() { public void run() { toggleTouch(); } });
-                  addButton("Pen", new Runnable() { public void run() { dv.setTool(0); } });
-                  addButton("Marker", new Runnable() { public void run() { dv.setTool(1); } });
-                  addButton("Eraser", new Runnable() { public void run() { dv.setTool(2); } });
-                  final Button colorBtn = addButton("Color", null);
-                  colorBtn.setBackgroundColor(colors[0]);
-                  colorBtn.setOnClickListener(new View.OnClickListener() {
-                      public void onClick(View v) {
-                          ci = (ci + 1) % colors.length;
-                          dv.setColor(colors[ci]);
-                          colorBtn.setBackgroundColor(colors[ci]);
-                          colorBtn.setTextColor(ci == 3 || ci == 5 ? Color.BLACK : Color.WHITE);
+                  addHandle();
+                  touchBtn = add("Touch", () -> toggleTouch());
+                  toolBtns[0] = add("Pen", () -> selectTool(0));
+                  toolBtns[1] = add("Marker", () -> selectTool(1));
+                  toolBtns[2] = add("Eraser", () -> selectTool(2));
+                  colorBtn = add("Color", () -> toggleColorPicker());
+
+                  dot = new Dot();
+                  dot.setBackground(round(0x33FFFFFF, dp(14)));
+                  bar.addView(dot, lp(dp(76), dp(40)));
+
+                  sizeBar = new SeekBar(this);
+                  sizeBar.setMax(100);
+                  sizeBar.setProgressTintList(ColorStateList.valueOf(0xFF4DA3FF));
+                  sizeBar.setThumbTintList(ColorStateList.valueOf(0xFF4DA3FF));
+                  sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                      public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                          if (fromUser) {
+                              dv.setFrac(dv.getTool(), p / 100f);
+                              dot.invalidate();
+                          }
                       }
+                      public void onStartTrackingTouch(SeekBar sb) { }
+                      public void onStopTrackingTouch(SeekBar sb) { }
                   });
-                  addButton("Undo", new Runnable() { public void run() { dv.undo(); } });
-                  addButton("Clear", new Runnable() { public void run() { dv.clear(); } });
-                  addButton("Exit", new Runnable() { public void run() { stopSelf(); } });
+                  bar.addView(sizeBar, lp(dp(76), dp(30)));
+
+                  add("Undo", () -> dv.undo());
+                  add("Clear", () -> dv.clear());
+                  add("Exit", () -> stopSelf());
                   wm.addView(bar, barp);
+                  applyColor(dv.getColor());
               }
 
-              private void addMenuButton() {
-                  Button b = new Button(this);
-                  b.setText("Menu");
-                  b.setTextSize(12);
-                  b.setTextColor(Color.WHITE);
-                  b.setBackgroundColor(0xFF4DA3FF);
-                  b.setOnClickListener(new View.OnClickListener() {
-                      public void onClick(View v) {
-                          collapsed = !collapsed;
-                          for (Button x : buttons) x.setVisibility(collapsed ? View.GONE : View.VISIBLE);
-                      }
-                  });
-                  bar.addView(b, buttonParams());
+              private GradientDrawable round(int color, int radius) {
+                  GradientDrawable g = new GradientDrawable();
+                  g.setColor(color);
+                  g.setCornerRadius(radius);
+                  return g;
               }
 
-              private Button addButton(String label, final Runnable action) {
+              private LinearLayout.LayoutParams lp(int w, int h) {
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
+                  p.setMargins(0, dp(2), 0, dp(2));
+                  return p;
+              }
+
+              private Button add(String label, final Runnable action) {
                   Button b = new Button(this);
                   b.setText(label);
-                  b.setTextSize(12);
+                  b.setAllCaps(false);
+                  b.setTextSize(11);
                   b.setTextColor(Color.WHITE);
-                  b.setBackgroundColor(0xFF555A61);
-                  if (action != null) {
-                      b.setOnClickListener(new View.OnClickListener() {
-                          public void onClick(View v) { action.run(); }
-                      });
-                  }
-                  buttons.add(b);
-                  bar.addView(b, buttonParams());
+                  b.setPadding(0, 0, 0, 0);
+                  b.setMinWidth(0);
+                  b.setMinHeight(0);
+                  b.setMinimumWidth(0);
+                  b.setMinimumHeight(0);
+                  b.setBackground(round(0x33FFFFFF, dp(14)));
+                  b.setOnClickListener(v -> action.run());
+                  bar.addView(b, lp(dp(76), dp(38)));
                   return b;
               }
 
-              private LinearLayout.LayoutParams buttonParams() {
-                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(72), dp(44));
-                  p.setMargins(0, dp(2), 0, dp(2));
-                  return p;
+              private void addHandle() {
+                  TextView hdr = new TextView(this);
+                  hdr.setText("\u2261");
+                  hdr.setTextSize(22);
+                  hdr.setTextColor(Color.WHITE);
+                  hdr.setGravity(Gravity.CENTER);
+                  hdr.setBackground(round(0x22FFFFFF, dp(14)));
+                  hdr.setOnTouchListener(new View.OnTouchListener() {
+                      private float sx, sy;
+                      private int ox, oy;
+                      private boolean moved;
+                      public boolean onTouch(View v, MotionEvent e) {
+                          switch (e.getActionMasked()) {
+                              case MotionEvent.ACTION_DOWN:
+                                  sx = e.getRawX(); sy = e.getRawY();
+                                  ox = barp.x; oy = barp.y;
+                                  moved = false;
+                                  return true;
+                              case MotionEvent.ACTION_MOVE:
+                                  float mx = e.getRawX() - sx, my = e.getRawY() - sy;
+                                  if (Math.abs(mx) > dp(6) || Math.abs(my) > dp(6)) moved = true;
+                                  if (moved) {
+                                      barp.x = Math.max(0, (int) (ox + mx));
+                                      barp.y = Math.max(0, (int) (oy + my));
+                                      wm.updateViewLayout(bar, barp);
+                                  }
+                                  return true;
+                              case MotionEvent.ACTION_UP:
+                                  if (!moved) toggleCollapse();
+                                  return true;
+                          }
+                          return false;
+                      }
+                  });
+                  bar.addView(hdr, lp(dp(76), dp(32)));
+              }
+
+              private void toggleCollapse() {
+                  collapsed = !collapsed;
+                  for (int i = 1; i < bar.getChildCount(); i++) {
+                      bar.getChildAt(i).setVisibility(collapsed ? View.GONE : View.VISIBLE);
+                  }
+              }
+
+              private void selectTool(int t) {
+                  dv.setTool(t);
+                  for (int i = 0; i < 3; i++) {
+                      toolBtns[i].setBackground(round(i == t ? 0xCC4DA3FF : 0x33FFFFFF, dp(14)));
+                  }
+                  sizeBar.setProgress(Math.round(dv.getFrac(t) * 100));
+                  dot.invalidate();
+              }
+
+              private void applyColor(int c) {
+                  dv.setColor(c);
+                  colorBtn.setBackground(round(c, dp(14)));
+                  double lum = Color.red(c) * 0.299 + Color.green(c) * 0.587 + Color.blue(c) * 0.114;
+                  colorBtn.setTextColor(lum > 150 ? Color.BLACK : Color.WHITE);
+                  selectTool(dv.getTool());
               }
 
               private void toggleTouch() {
@@ -536,6 +672,69 @@ jobs:
                   else dvp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
                   wm.updateViewLayout(dv, dvp);
                   touchBtn.setText(touchMode ? "Draw" : "Touch");
+                  touchBtn.setBackground(round(touchMode ? 0xCC2E9E4F : 0x33FFFFFF, dp(14)));
+              }
+
+              private void toggleColorPicker() {
+                  if (picker != null) {
+                      try { wm.removeView(picker); } catch (Exception e) { }
+                      picker = null;
+                      return;
+                  }
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setGravity(Gravity.CENTER_HORIZONTAL);
+                  GradientDrawable bg = round(0xEE1B1F24, dp(24));
+                  bg.setStroke(dp(1), 0x44FFFFFF);
+                  box.setBackground(bg);
+                  box.setPadding(dp(14), dp(12), dp(14), dp(12));
+
+                  TextView title = new TextView(this);
+                  title.setText("Pick a color");
+                  title.setTextColor(Color.WHITE);
+                  title.setTextSize(14);
+                  box.addView(title);
+
+                  final ColorWheelView wheel = new ColorWheelView(this);
+                  wheel.setColor(dv.getColor());
+                  wheel.setListener(c -> applyColor(c));
+                  box.addView(wheel, new LinearLayout.LayoutParams(dp(230), dp(230)));
+
+                  TextView bl = new TextView(this);
+                  bl.setText("Brightness");
+                  bl.setTextColor(0xFFB8C2CC);
+                  bl.setTextSize(12);
+                  box.addView(bl);
+
+                  SeekBar bright = new SeekBar(this);
+                  bright.setMax(100);
+                  bright.setProgress(Math.round(wheel.getValue() * 100));
+                  bright.setProgressTintList(ColorStateList.valueOf(0xFF4DA3FF));
+                  bright.setThumbTintList(ColorStateList.valueOf(0xFF4DA3FF));
+                  bright.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                      public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                          if (fromUser) wheel.setValue(p / 100f);
+                      }
+                      public void onStartTrackingTouch(SeekBar sb) { }
+                      public void onStopTrackingTouch(SeekBar sb) { }
+                  });
+                  box.addView(bright, new LinearLayout.LayoutParams(dp(230), dp(34)));
+
+                  Button done = new Button(this);
+                  done.setText("Done");
+                  done.setAllCaps(false);
+                  done.setTextColor(Color.WHITE);
+                  done.setBackground(round(0xFF4DA3FF, dp(14)));
+                  done.setOnClickListener(v -> toggleColorPicker());
+                  box.addView(done, new LinearLayout.LayoutParams(dp(230), dp(44)));
+
+                  WindowManager.LayoutParams pp = new WindowManager.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, type,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                          PixelFormat.TRANSLUCENT);
+                  pp.gravity = Gravity.CENTER;
+                  wm.addView(box, pp);
+                  picker = box;
               }
 
               private int dp(int v) {
@@ -561,7 +760,98 @@ jobs:
               public void onDestroy() {
                   try { wm.removeView(bar); } catch (Exception e) { }
                   try { wm.removeView(dv); } catch (Exception e) { }
+                  if (picker != null) { try { wm.removeView(picker); } catch (Exception e) { } }
                   super.onDestroy();
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/boardoverlay/ColorWheelView.java <<'EOF'
+          package com.example.boardoverlay;
+
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.graphics.RadialGradient;
+          import android.graphics.Shader;
+          import android.graphics.SweepGradient;
+          import android.view.MotionEvent;
+          import android.view.View;
+
+          public class ColorWheelView extends View {
+              public interface Listener { void onColor(int color); }
+
+              private final Paint huePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Paint satPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Paint darkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private float h = 0f, s = 1f, v = 1f, cx, cy, r;
+              private final float density;
+              private Listener listener;
+
+              public ColorWheelView(Context c) {
+                  super(c);
+                  density = c.getResources().getDisplayMetrics().density;
+                  ringPaint.setStyle(Paint.Style.STROKE);
+              }
+
+              public void setListener(Listener l) { listener = l; }
+
+              public void setColor(int c) {
+                  float[] a = new float[3];
+                  Color.colorToHSV(c, a);
+                  h = a[0]; s = a[1]; v = a[2];
+                  invalidate();
+              }
+
+              public float getValue() { return v; }
+
+              public void setValue(float val) { v = val; invalidate(); fire(); }
+
+              private void fire() {
+                  if (listener != null) listener.onColor(Color.HSVToColor(new float[] { h, s, v }));
+              }
+
+              @Override
+              protected void onSizeChanged(int w, int hh, int ow, int oh) {
+                  cx = w / 2f;
+                  cy = hh / 2f;
+                  r = Math.min(w, hh) / 2f - 8 * density;
+                  int[] cols = { 0xFFFF0000, 0xFFFFFF00, 0xFF00FF00, 0xFF00FFFF, 0xFF0000FF, 0xFFFF00FF, 0xFFFF0000 };
+                  huePaint.setShader(new SweepGradient(cx, cy, cols, null));
+                  satPaint.setShader(new RadialGradient(cx, cy, r, 0xFFFFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
+              }
+
+              @Override
+              protected void onDraw(Canvas c) {
+                  c.drawCircle(cx, cy, r, huePaint);
+                  c.drawCircle(cx, cy, r, satPaint);
+                  darkPaint.setColor(Color.argb((int) ((1f - v) * 255), 0, 0, 0));
+                  c.drawCircle(cx, cy, r, darkPaint);
+                  float px = cx + (float) Math.cos(Math.toRadians(h)) * s * r;
+                  float py = cy + (float) Math.sin(Math.toRadians(h)) * s * r;
+                  ringPaint.setStrokeWidth(4 * density);
+                  ringPaint.setColor(0xFF000000);
+                  c.drawCircle(px, py, 10 * density, ringPaint);
+                  ringPaint.setStrokeWidth(2 * density);
+                  ringPaint.setColor(0xFFFFFFFF);
+                  c.drawCircle(px, py, 10 * density, ringPaint);
+              }
+
+              @Override
+              public boolean onTouchEvent(MotionEvent e) {
+                  int a = e.getActionMasked();
+                  if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE) {
+                      float dx = e.getX() - cx, dy = e.getY() - cy;
+                      float dist = (float) Math.sqrt(dx * dx + dy * dy);
+                      s = Math.min(1f, dist / r);
+                      if (dist > 0.5f) h = (float) ((Math.toDegrees(Math.atan2(dy, dx)) + 360.0) % 360.0);
+                      invalidate();
+                      fire();
+                      return true;
+                  }
+                  return super.onTouchEvent(e);
               }
           }
           EOF
