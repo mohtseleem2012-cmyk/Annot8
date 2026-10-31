@@ -29,7 +29,7 @@ jobs:
                   mavenCentral()
               }
           }
-          rootProject.name = "Annot8"
+          rootProject.name = "BoardOverlay"
           include ':app'
           EOF
 
@@ -49,10 +49,10 @@ jobs:
               id 'com.android.application'
           }
           android {
-              namespace 'com.example.Annot8'
+              namespace 'com.example.boardoverlay'
               compileSdk 34
               defaultConfig {
-                  applicationId 'com.example.Annot8'
+                  applicationId 'com.example.boardoverlay'
                   minSdk 21
                   targetSdk 33
                   versionCode 1
@@ -393,4 +393,3 @@ jobs:
         with:
           name: board-overlay-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-          
