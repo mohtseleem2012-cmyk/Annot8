@@ -1020,11 +1020,321 @@ jobs:
                           () -> { dv.cycleBg(); o1[1].setText("Bg: " + new String[] { "Clear", "Dark", "White" }[dv.getBgMode()]); });
                   menuRow(box, o2, "Grid: " + new String[] { "Off", "Grid", "Lines" }[dv.getPattern()],
                           () -> { dv.cycleGrid(); o2[0].setText("Grid: " + new String[] { "Off", "Grid", "Lines" }[dv.getPattern()]); },
-                          "Save", () -> { closeMenu(); toggleSave(); });
+                          "Calculator", () -> { closeMenu(); toggleCalculator(); });
                   menuRow(box, null, "Delete selected", () -> { dv.deleteSelection(); closeMenu(); },
                           "Clear page", () -> { dv.clear(); closeMenu(); });
                   menuRow(box, null, "Close menu", () -> closeMenu(), "Exit Annot8", () -> stopSelf());
                   wm.addView(box, centered());
+              }
+
+              // ---------------- Floating calculator ----------------
+              private LinearLayout calcView;
+              private WindowManager.LayoutParams calcLp;
+              private TextView calcExpr;
+              private TextView calcRes;
+              private TextView calcTitle;
+              private final java.util.ArrayList<Button> calcBtns = new java.util.ArrayList<Button>();
+              private String calcStr = "";
+              private boolean degMode = true;
+              private boolean justEval = false;
+
+              static class Parser {
+                  private final String s;
+                  private final boolean deg;
+                  private int p = 0;
+                  Parser(String s, boolean deg) { this.s = s; this.deg = deg; }
+                  double parse() {
+                      double v = expr();
+                      if (p < s.length()) throw new RuntimeException("x");
+                      return v;
+                  }
+                  private char peek() { return p < s.length() ? s.charAt(p) : '\0'; }
+                  private boolean eat(char c) { if (peek() == c) { p++; return true; } return false; }
+                  private double expr() {
+                      double v = term();
+                      while (true) {
+                          if (eat('+')) v += term();
+                          else if (eat('-') || eat('\u2212')) v -= term();
+                          else return v;
+                      }
+                  }
+                  private boolean startsPrimary() {
+                      char c = peek();
+                      return c == '(' || c == '\u03C0' || c == 'e' || c == 's' || c == 'c' || c == 't' || c == 'l' || c == '\u221A';
+                  }
+                  private double term() {
+                      double v = unary();
+                      while (true) {
+                          if (eat('*') || eat('\u00D7')) v *= unary();
+                          else if (eat('/') || eat('\u00F7')) v /= unary();
+                          else if (startsPrimary()) v *= unary();
+                          else return v;
+                      }
+                  }
+                  private double unary() {
+                      if (eat('-') || eat('\u2212')) return -unary();
+                      if (eat('+')) return unary();
+                      return power();
+                  }
+                  private double power() {
+                      double b = postfix();
+                      if (eat('^')) return Math.pow(b, unary());
+                      return b;
+                  }
+                  private double postfix() {
+                      double v = primary();
+                      while (true) {
+                          if (eat('!')) v = fact(v);
+                          else if (eat('%')) v = v / 100.0;
+                          else return v;
+                      }
+                  }
+                  private double fact(double v) {
+                      if (v < 0 || v != Math.floor(v) || v > 170) throw new RuntimeException("x");
+                      double r = 1;
+                      for (int i = 2; i <= (int) v; i++) r *= i;
+                      return r;
+                  }
+                  private double rad(double v) { return deg ? Math.toRadians(v) : v; }
+                  private double primary() {
+                      if (eat('(')) { double v = expr(); eat(')'); return v; }
+                      if (eat('\u03C0')) return Math.PI;
+                      if (eat('e')) return Math.E;
+                      if (eat('\u221A')) return Math.sqrt(primary());
+                      if (s.startsWith("sin", p)) { p += 3; return Math.sin(rad(primary())); }
+                      if (s.startsWith("cos", p)) { p += 3; return Math.cos(rad(primary())); }
+                      if (s.startsWith("tan", p)) { p += 3; return Math.tan(rad(primary())); }
+                      if (s.startsWith("log", p)) { p += 3; return Math.log10(primary()); }
+                      if (s.startsWith("ln", p)) { p += 2; return Math.log(primary()); }
+                      int st = p;
+                      while (Character.isDigit(peek()) || peek() == '.') p++;
+                      if (st == p) throw new RuntimeException("x");
+                      return Double.parseDouble(s.substring(st, p));
+                  }
+              }
+
+              private String fmt(double v) {
+                  if (Double.isNaN(v) || Double.isInfinite(v)) throw new RuntimeException("x");
+                  if (Math.abs(v) < 1e-12) v = 0;
+                  java.text.DecimalFormat df = new java.text.DecimalFormat("0.##########",
+                          java.text.DecimalFormatSymbols.getInstance(java.util.Locale.US));
+                  return df.format(v);
+              }
+
+              private class MoveResize implements View.OnTouchListener {
+                  private float sx, sy, d0;
+                  private int ox, oy, w0, mode;
+                  private float dist(MotionEvent e) {
+                      return (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+                  }
+                  public boolean onTouch(View v, MotionEvent e) {
+                      switch (e.getActionMasked()) {
+                          case MotionEvent.ACTION_DOWN:
+                              sx = e.getRawX(); sy = e.getRawY(); ox = calcLp.x; oy = calcLp.y; mode = 1;
+                              return true;
+                          case MotionEvent.ACTION_POINTER_DOWN:
+                              if (e.getPointerCount() == 2) { mode = 2; d0 = dist(e); w0 = calcLp.width; }
+                              return true;
+                          case MotionEvent.ACTION_MOVE:
+                              if (mode == 1) {
+                                  calcLp.x = Math.max(0, (int) (ox + e.getRawX() - sx));
+                                  calcLp.y = Math.max(0, (int) (oy + e.getRawY() - sy));
+                                  wm.updateViewLayout(calcView, calcLp);
+                              } else if (mode == 2 && e.getPointerCount() >= 2 && d0 > 0) {
+                                  resizeCalc((int) (w0 * dist(e) / d0));
+                              }
+                              return true;
+                          case MotionEvent.ACTION_POINTER_UP:
+                              mode = 0;
+                              return true;
+                          case MotionEvent.ACTION_UP:
+                          case MotionEvent.ACTION_CANCEL:
+                              mode = 0;
+                              return true;
+                      }
+                      return false;
+                  }
+              }
+
+              private void resizeCalc(int w) {
+                  if (calcView == null) return;
+                  int maxW = (int) (getResources().getDisplayMetrics().widthPixels * 0.9f);
+                  w = Math.max(dp(220), Math.min(maxW, w));
+                  calcLp.width = w;
+                  calcLp.height = (int) (w * 1.5f);
+                  wm.updateViewLayout(calcView, calcLp);
+                  scaleCalc();
+              }
+
+              private void scaleCalc() {
+                  float w = calcLp.width;
+                  for (Button b : calcBtns) b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.058f);
+                  calcExpr.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.05f);
+                  calcRes.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.085f);
+                  calcTitle.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.045f);
+              }
+
+              private void closeCalculator() {
+                  if (calcView != null) {
+                      try { wm.removeView(calcView); } catch (Exception e) { }
+                      calcView = null;
+                      calcBtns.clear();
+                  }
+              }
+
+              private void key(String ins, Button b) {
+                  boolean op = ins.equals("+") || ins.equals("\u2212") || ins.equals("\u00D7") || ins.equals("\u00F7")
+                          || ins.equals("^") || ins.equals("!") || ins.equals("%");
+                  if (ins.equals("C")) {
+                      calcStr = "";
+                      justEval = false;
+                  } else if (ins.equals("DEL")) {
+                      String[] toks = { "sin(", "cos(", "tan(", "log(", "ln(", "\u221A(" };
+                      int cut = 1;
+                      for (String t : toks) if (calcStr.endsWith(t)) { cut = t.length(); break; }
+                      calcStr = calcStr.length() >= cut ? calcStr.substring(0, calcStr.length() - cut) : "";
+                      justEval = false;
+                  } else if (ins.equals("DEG")) {
+                      degMode = !degMode;
+                      b.setText(degMode ? "Deg" : "Rad");
+                  } else if (ins.equals("=")) {
+                      try {
+                          calcStr = fmt(new Parser(calcStr, degMode).parse());
+                          justEval = true;
+                          calcRes.setText("");
+                          calcExpr.setText(calcStr);
+                      } catch (Exception e) {
+                          calcRes.setText("Error");
+                      }
+                      return;
+                  } else {
+                      if (justEval && !op) calcStr = "";
+                      justEval = false;
+                      calcStr += ins;
+                  }
+                  calcExpr.setText(calcStr);
+                  String prev = "";
+                  if (calcStr.length() > 0) {
+                      try {
+                          prev = fmt(new Parser(calcStr, degMode).parse());
+                          if (prev.equals(calcStr)) prev = "";
+                      } catch (Exception e) {
+                          prev = "";
+                      }
+                  }
+                  calcRes.setText(prev);
+              }
+
+              private void toggleCalculator() {
+                  if (calcView != null) { closeCalculator(); return; }
+                  calcStr = "";
+                  justEval = false;
+                  final LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  GradientDrawable g = round(0xEE1B1F24, dp(22));
+                  g.setStroke(dp(1), 0x44FFFFFF);
+                  root.setBackground(g);
+                  root.setPadding(dp(8), dp(6), dp(8), dp(6));
+                  final MoveResize mr = new MoveResize();
+
+                  LinearLayout head = new LinearLayout(this);
+                  head.setOrientation(LinearLayout.HORIZONTAL);
+                  head.setGravity(Gravity.CENTER_VERTICAL);
+                  calcTitle = new TextView(this);
+                  calcTitle.setText("\u2261  Calculator");
+                  calcTitle.setTextColor(0xFFB8C2CC);
+                  head.addView(calcTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  Button x = newBtn("\u2715", 12);
+                  x.setOnClickListener(v -> closeCalculator());
+                  head.addView(x, new LinearLayout.LayoutParams(dp(36), dp(30)));
+                  head.setOnTouchListener(mr);
+                  root.addView(head, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                  LinearLayout disp = new LinearLayout(this);
+                  disp.setOrientation(LinearLayout.VERTICAL);
+                  calcExpr = new TextView(this);
+                  calcExpr.setTextColor(0xFFB8C2CC);
+                  calcExpr.setGravity(Gravity.END);
+                  calcExpr.setSingleLine(true);
+                  calcExpr.setEllipsize(android.text.TextUtils.TruncateAt.START);
+                  calcRes = new TextView(this);
+                  calcRes.setTextColor(Color.WHITE);
+                  calcRes.setGravity(Gravity.END);
+                  calcRes.setSingleLine(true);
+                  calcRes.setMinHeight(dp(30));
+                  disp.addView(calcExpr, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  disp.addView(calcRes, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  disp.setOnTouchListener(mr);
+                  root.addView(disp, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                  String[][] rows = {
+                          { "Deg", "sin", "cos", "tan", "DEL" },
+                          { "ln", "log", "\u221A", "^", "C" },
+                          { "\u03C0", "e", "(", ")", "\u00F7" },
+                          { "7", "8", "9", "%", "\u00D7" },
+                          { "4", "5", "6", "!", "\u2212" },
+                          { "1", "2", "3", ".", "+" },
+                          { "0", "=" } };
+                  String funcs = " sin cos tan ln log \u221A ";
+                  String ops = " \u00F7 \u00D7 \u2212 + ^ % ! ";
+                  calcBtns.clear();
+                  for (String[] row : rows) {
+                      LinearLayout r = new LinearLayout(this);
+                      r.setOrientation(LinearLayout.HORIZONTAL);
+                      for (String lab : row) {
+                          String ins = lab;
+                          if (funcs.contains(" " + lab + " ")) ins = lab + "(";
+                          if (lab.equals("Deg")) ins = "DEG";
+                          final String fin = ins;
+                          final Button b = newBtn(lab, 14);
+                          calcBtns.add(b);
+                          int col = 0x22FFFFFF;
+                          if (ops.contains(" " + lab + " ")) col = 0x884DA3FF;
+                          else if (lab.equals("=")) col = 0xFF4DA3FF;
+                          else if (lab.equals("C") || lab.equals("DEL")) col = 0x88E53935;
+                          else if (Character.isDigit(lab.charAt(0)) || lab.equals(".")) col = 0x55FFFFFF;
+                          b.setBackground(round(col, dp(12)));
+                          b.setOnClickListener(v -> key(fin, b));
+                          float wgt = row.length == 2 ? (lab.equals("0") ? 2f : 3f) : 1f;
+                          LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, wgt);
+                          p.setMargins(dp(2), dp(2), dp(2), dp(2));
+                          r.addView(b, p);
+                      }
+                      root.addView(r, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+                  }
+
+                  final TextView grip = new TextView(this);
+                  grip.setText("\u25E2");
+                  grip.setTextColor(0xFF8FA3B8);
+                  grip.setTextSize(20);
+                  grip.setGravity(Gravity.CENTER);
+                  grip.setOnTouchListener(new View.OnTouchListener() {
+                      private float sx;
+                      private int w0;
+                      public boolean onTouch(View v, MotionEvent e) {
+                          switch (e.getActionMasked()) {
+                              case MotionEvent.ACTION_DOWN:
+                                  sx = e.getRawX(); w0 = calcLp.width;
+                                  return true;
+                              case MotionEvent.ACTION_MOVE:
+                                  resizeCalc((int) (w0 + e.getRawX() - sx));
+                                  return true;
+                          }
+                          return true;
+                      }
+                  });
+                  LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(dp(40), dp(26));
+                  gp.gravity = Gravity.END;
+                  root.addView(grip, gp);
+
+                  calcLp = new WindowManager.LayoutParams(dp(300), dp(450), type,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT);
+                  calcLp.gravity = Gravity.TOP | Gravity.LEFT;
+                  calcLp.x = dp(120);
+                  calcLp.y = dp(40);
+                  calcView = root;
+                  wm.addView(root, calcLp);
+                  scaleCalc();
               }
 
               private void toggleTouch() {
@@ -1127,6 +1437,7 @@ jobs:
                   try { wm.removeView(dv); } catch (Exception e) { }
                   if (colorOpen) { try { wm.removeView(colorBox); } catch (Exception e) { } }
                   closeMenu();
+                  closeCalculator();
                   if (saveBox != null) { try { wm.removeView(saveBox); } catch (Exception e) { } }
                   super.onDestroy();
               }
