@@ -353,10 +353,13 @@ jobs:
           import android.graphics.Bitmap;
           import android.graphics.Canvas;
           import android.graphics.Color;
+          import android.graphics.DashPathEffect;
+          import android.graphics.Matrix;
           import android.graphics.Paint;
           import android.graphics.Path;
           import android.graphics.PorterDuff;
           import android.graphics.PorterDuffXfermode;
+          import android.graphics.RectF;
           import android.view.MotionEvent;
           import android.view.View;
           import java.util.ArrayList;
@@ -365,38 +368,76 @@ jobs:
               static class Stroke {
                   Path path = new Path();
                   Paint paint;
+                  ArrayList<float[]> pts = new ArrayList<float[]>();
+                  boolean erase;
               }
 
               private final ArrayList<Stroke> strokes = new ArrayList<Stroke>();
+              private final ArrayList<Stroke> redoList = new ArrayList<Stroke>();
+              private final ArrayList<Stroke> sel = new ArrayList<Stroke>();
+              private final ArrayList<float[]> lasso = new ArrayList<float[]>();
               private Stroke cur;
               private int color = Color.RED;
-              private int tool = 0; // 0 pen, 1 marker, 2 eraser
+              private int tool = 0; // 0 pen, 1 marker, 2 eraser, 3 select
               private int bgMode = 0; // 0 clear, 1 dark, 2 white
               private int pattern = 0; // 0 none, 1 grid, 2 lines
+              private int mode = 0; // select gesture: 1 move, 2 lasso, 3 pinch
+              private float lx, ly, downX, downY, lastDist, lastCx, lastCy;
+              private boolean moved;
               private final float dens;
               private final float[] mn;
               private final float[] mx;
-              private final float[] fr = { 0.15f, 0.2f, 0.25f };
+              private final float[] fr = { 0.15f, 0.2f, 0.25f, 0f };
               private final Paint gp = new Paint();
+              private final Paint ov = new Paint(Paint.ANTI_ALIAS_FLAG);
 
               public DrawView(Context c) {
                   super(c);
                   float d = c.getResources().getDisplayMetrics().density;
                   dens = d;
-                  mn = new float[] { 1 * d, 6 * d, 8 * d };
-                  mx = new float[] { 24 * d, 48 * d, 70 * d };
+                  mn = new float[] { 1 * d, 6 * d, 8 * d, 1 * d };
+                  mx = new float[] { 24 * d, 48 * d, 70 * d, 1 * d };
+                  ov.setStyle(Paint.Style.STROKE);
+                  ov.setColor(0xFF4DA3FF);
+                  ov.setStrokeWidth(2 * d);
+                  ov.setPathEffect(new DashPathEffect(new float[] { 10 * d, 6 * d }, 0));
                   setLayerType(View.LAYER_TYPE_HARDWARE, null);
               }
 
-              public void setTool(int t) { tool = t; }
+              public void setTool(int t) {
+                  tool = t;
+                  if (t != 3) { sel.clear(); lasso.clear(); invalidate(); }
+              }
               public int getTool() { return tool; }
-              public void setColor(int c) { color = c; if (tool == 2) tool = 0; }
+              public void setColor(int c) {
+                  color = c;
+                  if (tool == 2) tool = 0;
+                  if (tool == 3 && !sel.isEmpty()) {
+                      for (Stroke s : sel) {
+                          int a = Color.alpha(s.paint.getColor());
+                          s.paint.setColor((c & 0x00FFFFFF) | (a << 24));
+                      }
+                      invalidate();
+                  }
+              }
               public int getColor() { return color; }
               public float getFrac(int t) { return fr[t]; }
               public void setFrac(int t, float f) { fr[t] = Math.max(0f, Math.min(1f, f)); }
-              public float widthPx() { return mn[tool] + fr[tool] * (mx[tool] - mn[tool]); }
-              public void undo() { if (!strokes.isEmpty()) { strokes.remove(strokes.size() - 1); invalidate(); } }
-              public void clear() { strokes.clear(); invalidate(); }
+              public float widthPx() { int t = tool == 3 ? 0 : tool; return mn[t] + fr[t] * (mx[t] - mn[t]); }
+              public void undo() {
+                  if (!strokes.isEmpty()) {
+                      Stroke s = strokes.remove(strokes.size() - 1);
+                      sel.remove(s);
+                      redoList.add(s);
+                      invalidate();
+                  }
+              }
+              public void redo() {
+                  if (!redoList.isEmpty()) { strokes.add(redoList.remove(redoList.size() - 1)); invalidate(); }
+              }
+              public void clear() { strokes.clear(); redoList.clear(); sel.clear(); invalidate(); }
+              public void deleteSelection() { strokes.removeAll(sel); sel.clear(); invalidate(); }
+              public boolean hasSelection() { return !sel.isEmpty(); }
               public void cycleBg() { bgMode = (bgMode + 1) % 3; invalidate(); }
               public void cycleGrid() { pattern = (pattern + 1) % 3; invalidate(); }
               public int getBgMode() { return bgMode; }
@@ -446,25 +487,155 @@ jobs:
                   return b;
               }
 
+              private RectF selBounds() {
+                  if (sel.isEmpty()) return null;
+                  RectF all = null;
+                  RectF r = new RectF();
+                  for (Stroke s : sel) {
+                      s.path.computeBounds(r, true);
+                      float pad = s.paint.getStrokeWidth() / 2f;
+                      RectF q = new RectF(r.left - pad, r.top - pad, r.right + pad, r.bottom + pad);
+                      if (all == null) all = q; else all.union(q);
+                  }
+                  return all;
+              }
+
               @Override
               protected void onDraw(Canvas canvas) {
                   paintAll(canvas, getWidth(), getHeight());
+                  if (tool == 3) {
+                      RectF b = selBounds();
+                      if (b != null) canvas.drawRect(b, ov);
+                      if (lasso.size() > 1) {
+                          Path lp = new Path();
+                          lp.moveTo(lasso.get(0)[0], lasso.get(0)[1]);
+                          for (int i = 1; i < lasso.size(); i++) lp.lineTo(lasso.get(i)[0], lasso.get(i)[1]);
+                          canvas.drawPath(lp, ov);
+                      }
+                  }
+              }
+
+              private void applyToSelection(Matrix m, float sc) {
+                  for (Stroke s : sel) {
+                      s.path.transform(m);
+                      for (float[] p : s.pts) m.mapPoints(p);
+                      if (sc != 1f) s.paint.setStrokeWidth(Math.max(1f, s.paint.getStrokeWidth() * sc));
+                  }
+              }
+
+              private boolean inLasso(float x, float y) {
+                  boolean in = false;
+                  int n = lasso.size();
+                  for (int i = 0, j = n - 1; i < n; j = i++) {
+                      float xi = lasso.get(i)[0], yi = lasso.get(i)[1], xj = lasso.get(j)[0], yj = lasso.get(j)[1];
+                      if (((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) in = !in;
+                  }
+                  return in;
+              }
+
+              private void selectInLasso() {
+                  for (Stroke s : strokes) {
+                      if (s.erase || s.pts.isEmpty()) continue;
+                      int inside = 0;
+                      for (float[] p : s.pts) if (inLasso(p[0], p[1])) inside++;
+                      if (inside * 2 >= s.pts.size()) sel.add(s);
+                  }
+              }
+
+              private void tapSelect(float x, float y) {
+                  for (int i = strokes.size() - 1; i >= 0; i--) {
+                      Stroke s = strokes.get(i);
+                      if (s.erase) continue;
+                      float r = Math.max(s.paint.getStrokeWidth() / 2f, 14 * dens);
+                      for (float[] p : s.pts) {
+                          if (Math.hypot(p[0] - x, p[1] - y) <= r) { sel.add(s); return; }
+                      }
+                  }
+              }
+
+              private boolean selectTouch(MotionEvent e) {
+                  float x = e.getX(), y = e.getY();
+                  switch (e.getActionMasked()) {
+                      case MotionEvent.ACTION_DOWN: {
+                          downX = x; downY = y; lx = x; ly = y; moved = false;
+                          RectF b = selBounds();
+                          if (b != null) b.inset(-16 * dens, -16 * dens);
+                          if (b != null && b.contains(x, y)) {
+                              mode = 1;
+                          } else {
+                              sel.clear();
+                              mode = 2;
+                              lasso.clear();
+                              lasso.add(new float[] { x, y });
+                          }
+                          invalidate();
+                          return true;
+                      }
+                      case MotionEvent.ACTION_POINTER_DOWN:
+                          if (!sel.isEmpty() && e.getPointerCount() == 2) {
+                              mode = 3;
+                              lastDist = (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+                              lastCx = (e.getX(0) + e.getX(1)) / 2f;
+                              lastCy = (e.getY(0) + e.getY(1)) / 2f;
+                          }
+                          return true;
+                      case MotionEvent.ACTION_MOVE:
+                          if (mode == 1) {
+                              Matrix m = new Matrix();
+                              m.setTranslate(x - lx, y - ly);
+                              applyToSelection(m, 1f);
+                              lx = x; ly = y;
+                          } else if (mode == 2) {
+                              lasso.add(new float[] { x, y });
+                              if (Math.hypot(x - downX, y - downY) > 8 * dens) moved = true;
+                          } else if (mode == 3 && e.getPointerCount() >= 2) {
+                              float d = (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+                              float cx = (e.getX(0) + e.getX(1)) / 2f, cy = (e.getY(0) + e.getY(1)) / 2f;
+                              if (lastDist > 0) {
+                                  float s = d / lastDist;
+                                  Matrix m = new Matrix();
+                                  m.setScale(s, s, lastCx, lastCy);
+                                  m.postTranslate(cx - lastCx, cy - lastCy);
+                                  applyToSelection(m, s);
+                              }
+                              lastDist = d; lastCx = cx; lastCy = cy;
+                          }
+                          invalidate();
+                          return true;
+                      case MotionEvent.ACTION_POINTER_UP:
+                          if (mode == 3) mode = 0;
+                          return true;
+                      case MotionEvent.ACTION_UP:
+                      case MotionEvent.ACTION_CANCEL:
+                          if (mode == 2) {
+                              if (moved) selectInLasso(); else tapSelect(x, y);
+                              lasso.clear();
+                          }
+                          mode = 0;
+                          invalidate();
+                          return true;
+                  }
+                  return true;
               }
 
               @Override
               public boolean onTouchEvent(MotionEvent e) {
+                  if (tool == 3) return selectTouch(e);
                   float x = e.getX(), y = e.getY();
                   switch (e.getActionMasked()) {
                       case MotionEvent.ACTION_DOWN:
                           cur = new Stroke();
                           cur.paint = makePaint();
+                          cur.erase = tool == 2;
                           cur.path.moveTo(x, y);
                           cur.path.lineTo(x + 0.1f, y);
+                          cur.pts.add(new float[] { x, y });
                           strokes.add(cur);
+                          redoList.clear();
                           invalidate();
                           return true;
                       case MotionEvent.ACTION_MOVE:
-                          if (cur != null) { cur.path.lineTo(x, y); invalidate(); }
+                          if (cur != null) { cur.path.lineTo(x, y); cur.pts.add(new float[] { x, y }); invalidate(); }
                           return true;
                       case MotionEvent.ACTION_UP:
                       case MotionEvent.ACTION_CANCEL:
@@ -480,28 +651,24 @@ jobs:
           package com.example.boardoverlay;
 
           import android.app.Notification;
-          import android.content.ContentValues;
-          import android.graphics.Bitmap;
-          import android.graphics.pdf.PdfDocument;
-          import android.net.Uri;
-          import android.os.Environment;
-          import android.provider.MediaStore;
-          import android.widget.Toast;
-          import java.io.File;
-          import java.io.FileOutputStream;
-          import java.io.OutputStream;
           import android.app.NotificationChannel;
           import android.app.NotificationManager;
           import android.app.Service;
+          import android.content.ContentValues;
           import android.content.Intent;
           import android.content.res.ColorStateList;
+          import android.graphics.Bitmap;
           import android.graphics.Canvas;
           import android.graphics.Color;
           import android.graphics.Paint;
           import android.graphics.PixelFormat;
           import android.graphics.drawable.GradientDrawable;
+          import android.graphics.pdf.PdfDocument;
+          import android.net.Uri;
           import android.os.Build;
+          import android.os.Environment;
           import android.os.IBinder;
+          import android.provider.MediaStore;
           import android.view.Gravity;
           import android.view.MotionEvent;
           import android.view.View;
@@ -511,23 +678,28 @@ jobs:
           import android.widget.LinearLayout;
           import android.widget.SeekBar;
           import android.widget.TextView;
+          import android.widget.Toast;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.OutputStream;
 
           public class OverlayService extends Service {
               private WindowManager wm;
               private DrawView dv;
               private LinearLayout bar;
-              private LinearLayout picker;
-              private LinearLayout savePicker;
-              private Button bgBtn;
-              private Button gridBtn;
+              private LinearLayout colorBox;
+              private LinearLayout menuBox;
+              private LinearLayout saveBox;
               private WindowManager.LayoutParams dvp;
               private WindowManager.LayoutParams barp;
               private int type;
-              private Button touchBtn;
               private Button colorBtn;
               private SeekBar sizeBar;
+              private SeekBar bright;
+              private ColorWheelView wheel;
               private Dot dot;
-              private final Button[] toolBtns = new Button[3];
+              private boolean colorOpen = false;
+              private final Button[] toolBtns = new Button[4];
               private boolean touchMode = false;
               private boolean collapsed = false;
 
@@ -538,14 +710,15 @@ jobs:
                   protected void onDraw(Canvas c) {
                       float cx = getWidth() / 2f, cy = getHeight() / 2f;
                       float r = Math.min(dv.widthPx() / 2f, Math.min(cx, cy) - dp(2));
-                      if (dv.getTool() == 2) {
+                      int t = dv.getTool();
+                      if (t == 2) {
                           p.setStyle(Paint.Style.STROKE);
                           p.setStrokeWidth(dp(2));
                           p.setColor(0xFFFFFFFF);
                       } else {
                           p.setStyle(Paint.Style.FILL);
                           int col = dv.getColor();
-                          p.setColor(dv.getTool() == 1 ? ((col & 0xFFFFFF) | 0x99000000) : col);
+                          p.setColor(t == 1 ? ((col & 0xFFFFFF) | 0x99000000) : col);
                       }
                       c.drawCircle(cx, cy, Math.max(r, dp(1)), p);
                   }
@@ -590,37 +763,17 @@ jobs:
                   barp.y = dp(40);
 
                   addHandle();
-                  touchBtn = add("Touch", () -> toggleTouch());
-                  toolBtns[0] = add("Pen", () -> selectTool(0));
-                  toolBtns[1] = add("Marker", () -> selectTool(1));
-                  toolBtns[2] = add("Eraser", () -> selectTool(2));
-                  colorBtn = add("Color", () -> toggleColorPicker());
-
-                  dot = new Dot();
-                  dot.setBackground(round(0x33FFFFFF, dp(14)));
-                  bar.addView(dot, lp(dp(76), dp(40)));
-
-                  sizeBar = new SeekBar(this);
-                  sizeBar.setMax(100);
-                  sizeBar.setProgressTintList(ColorStateList.valueOf(0xFF4DA3FF));
-                  sizeBar.setThumbTintList(ColorStateList.valueOf(0xFF4DA3FF));
-                  sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                      public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                          if (fromUser) {
-                              dv.setFrac(dv.getTool(), p / 100f);
-                              dot.invalidate();
-                          }
-                      }
-                      public void onStartTrackingTouch(SeekBar sb) { }
-                      public void onStopTrackingTouch(SeekBar sb) { }
-                  });
-                  bar.addView(sizeBar, lp(dp(76), dp(30)));
-
-                  addPair("Undo", () -> dv.undo(), "Clear", () -> dv.clear());
-                  bgBtn = add("Bg: Clear", () -> cycleBg());
-                  gridBtn = add("Grid: Off", () -> cycleGrid());
-                  addPair("Save", () -> toggleSavePicker(), "Exit", () -> stopSelf());
+                  Button[] r1 = addPair("Pen", () -> selectTool(0), "Marker", () -> selectTool(1));
+                  Button[] r2 = addPair("Eraser", () -> selectTool(2), "Select", () -> selectTool(3));
+                  toolBtns[0] = r1[0];
+                  toolBtns[1] = r1[1];
+                  toolBtns[2] = r2[0];
+                  toolBtns[3] = r2[1];
+                  colorBtn = add("Color", () -> toggleColor());
+                  addPair("Undo", () -> dv.undo(), "Redo", () -> dv.redo());
+                  add("More", () -> toggleMenu());
                   wm.addView(bar, barp);
+                  buildColorBox();
                   applyColor(dv.getColor());
               }
 
@@ -635,23 +788,6 @@ jobs:
                   LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
                   p.setMargins(0, dp(2), 0, dp(2));
                   return p;
-              }
-
-              private Button add(String label, final Runnable action) {
-                  Button b = new Button(this);
-                  b.setText(label);
-                  b.setAllCaps(false);
-                  b.setTextSize(11);
-                  b.setTextColor(Color.WHITE);
-                  b.setPadding(0, 0, 0, 0);
-                  b.setMinWidth(0);
-                  b.setMinHeight(0);
-                  b.setMinimumWidth(0);
-                  b.setMinimumHeight(0);
-                  b.setBackground(round(0x33FFFFFF, dp(14)));
-                  b.setOnClickListener(v -> action.run());
-                  bar.addView(b, lp(dp(76), dp(38)));
-                  return b;
               }
 
               private Button newBtn(String label, int sp) {
@@ -669,7 +805,14 @@ jobs:
                   return b;
               }
 
-              private void addPair(String l1, final Runnable r1, String l2, final Runnable r2) {
+              private Button add(String label, final Runnable action) {
+                  Button b = newBtn(label, 11);
+                  b.setOnClickListener(v -> action.run());
+                  bar.addView(b, lp(dp(84), dp(38)));
+                  return b;
+              }
+
+              private Button[] addPair(String l1, final Runnable r1, String l2, final Runnable r2) {
                   LinearLayout row = new LinearLayout(this);
                   row.setOrientation(LinearLayout.HORIZONTAL);
                   Button a = newBtn(l1, 10);
@@ -682,56 +825,236 @@ jobs:
                   pb.setMargins(dp(2), 0, 0, 0);
                   row.addView(a, pa);
                   row.addView(b, pb);
-                  bar.addView(row, lp(dp(76), dp(38)));
+                  bar.addView(row, lp(dp(84), dp(38)));
+                  return new Button[] { a, b };
               }
 
-              private void cycleBg() {
-                  dv.cycleBg();
-                  bgBtn.setText("Bg: " + new String[] { "Clear", "Dark", "White" }[dv.getBgMode()]);
+              private void addHandle() {
+                  TextView hdr = new TextView(this);
+                  hdr.setText("\u2261");
+                  hdr.setTextSize(22);
+                  hdr.setTextColor(Color.WHITE);
+                  hdr.setGravity(Gravity.CENTER);
+                  hdr.setBackground(round(0x22FFFFFF, dp(14)));
+                  hdr.setOnTouchListener(new View.OnTouchListener() {
+                      private float sx, sy;
+                      private int ox, oy;
+                      private boolean moved;
+                      public boolean onTouch(View v, MotionEvent e) {
+                          switch (e.getActionMasked()) {
+                              case MotionEvent.ACTION_DOWN:
+                                  sx = e.getRawX(); sy = e.getRawY();
+                                  ox = barp.x; oy = barp.y;
+                                  moved = false;
+                                  return true;
+                              case MotionEvent.ACTION_MOVE:
+                                  float mx = e.getRawX() - sx, my = e.getRawY() - sy;
+                                  if (Math.abs(mx) > dp(6) || Math.abs(my) > dp(6)) moved = true;
+                                  if (moved) {
+                                      barp.x = Math.max(0, (int) (ox + mx));
+                                      barp.y = Math.max(0, (int) (oy + my));
+                                      wm.updateViewLayout(bar, barp);
+                                  }
+                                  return true;
+                              case MotionEvent.ACTION_UP:
+                                  if (!moved) toggleCollapse();
+                                  return true;
+                          }
+                          return false;
+                      }
+                  });
+                  bar.addView(hdr, lp(dp(84), dp(32)));
               }
 
-              private void cycleGrid() {
-                  dv.cycleGrid();
-                  gridBtn.setText("Grid: " + new String[] { "Off", "Grid", "Lines" }[dv.getPattern()]);
-              }
-
-              private void toggleSavePicker() {
-                  if (savePicker != null) {
-                      try { wm.removeView(savePicker); } catch (Exception e) { }
-                      savePicker = null;
-                      return;
+              private void toggleCollapse() {
+                  collapsed = !collapsed;
+                  for (int i = 1; i < bar.getChildCount(); i++) {
+                      bar.getChildAt(i).setVisibility(collapsed ? View.GONE : View.VISIBLE);
                   }
+              }
+
+              private void selectTool(int t) {
+                  dv.setTool(t);
+                  for (int i = 0; i < 4; i++) {
+                      toolBtns[i].setBackground(round(i == t ? 0xCC4DA3FF : 0x33FFFFFF, dp(14)));
+                  }
+                  if (sizeBar != null) sizeBar.setProgress(Math.round(dv.getFrac(t == 3 ? 0 : t) * 100));
+                  if (dot != null) dot.invalidate();
+              }
+
+              private void applyColor(int c) {
+                  dv.setColor(c);
+                  colorBtn.setBackground(round(c, dp(14)));
+                  double lum = Color.red(c) * 0.299 + Color.green(c) * 0.587 + Color.blue(c) * 0.114;
+                  colorBtn.setTextColor(lum > 150 ? Color.BLACK : Color.WHITE);
+                  selectTool(dv.getTool());
+              }
+
+              private WindowManager.LayoutParams centered() {
+                  WindowManager.LayoutParams pp = new WindowManager.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, type,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                          PixelFormat.TRANSLUCENT);
+                  pp.gravity = Gravity.CENTER;
+                  return pp;
+              }
+
+              private LinearLayout panel(String titleText) {
                   LinearLayout box = new LinearLayout(this);
                   box.setOrientation(LinearLayout.VERTICAL);
                   box.setGravity(Gravity.CENTER_HORIZONTAL);
                   GradientDrawable bg = round(0xEE1B1F24, dp(24));
                   bg.setStroke(dp(1), 0x44FFFFFF);
                   box.setBackground(bg);
-                  box.setPadding(dp(16), dp(12), dp(16), dp(12));
+                  box.setPadding(dp(14), dp(12), dp(14), dp(12));
                   TextView title = new TextView(this);
-                  title.setText("Save as");
+                  title.setText(titleText);
                   title.setTextColor(Color.WHITE);
                   title.setTextSize(15);
                   box.addView(title);
+                  return box;
+              }
+
+              private void buildColorBox() {
+                  colorBox = panel("Color and size");
+                  wheel = new ColorWheelView(this);
+                  wheel.setListener(c -> applyColor(c));
+                  colorBox.addView(wheel, new LinearLayout.LayoutParams(dp(230), dp(230)));
+
+                  TextView bl = new TextView(this);
+                  bl.setText("Brightness");
+                  bl.setTextColor(0xFFB8C2CC);
+                  bl.setTextSize(12);
+                  colorBox.addView(bl);
+                  bright = new SeekBar(this);
+                  bright.setMax(100);
+                  bright.setProgressTintList(ColorStateList.valueOf(0xFF4DA3FF));
+                  bright.setThumbTintList(ColorStateList.valueOf(0xFF4DA3FF));
+                  bright.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                      public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                          if (fromUser) wheel.setValue(p / 100f);
+                      }
+                      public void onStartTrackingTouch(SeekBar sb) { }
+                      public void onStopTrackingTouch(SeekBar sb) { }
+                  });
+                  colorBox.addView(bright, new LinearLayout.LayoutParams(dp(230), dp(34)));
+
+                  TextView sl = new TextView(this);
+                  sl.setText("Thickness (pen, marker, or eraser)");
+                  sl.setTextColor(0xFFB8C2CC);
+                  sl.setTextSize(12);
+                  colorBox.addView(sl);
+                  sizeBar = new SeekBar(this);
+                  sizeBar.setMax(100);
+                  sizeBar.setProgressTintList(ColorStateList.valueOf(0xFF4DA3FF));
+                  sizeBar.setThumbTintList(ColorStateList.valueOf(0xFF4DA3FF));
+                  sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                      public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                          if (fromUser) {
+                              int t = dv.getTool() == 3 ? 0 : dv.getTool();
+                              dv.setFrac(t, p / 100f);
+                              dot.invalidate();
+                          }
+                      }
+                      public void onStartTrackingTouch(SeekBar sb) { }
+                      public void onStopTrackingTouch(SeekBar sb) { }
+                  });
+                  colorBox.addView(sizeBar, new LinearLayout.LayoutParams(dp(230), dp(34)));
+
+                  dot = new Dot();
+                  dot.setBackground(round(0x33FFFFFF, dp(14)));
+                  colorBox.addView(dot, lp(dp(230), dp(44)));
+
+                  Button done = newBtn("Done", 15);
+                  done.setBackground(round(0xFF4DA3FF, dp(14)));
+                  done.setOnClickListener(v -> toggleColor());
+                  colorBox.addView(done, lp(dp(230), dp(44)));
+              }
+
+              private void toggleColor() {
+                  if (colorOpen) {
+                      try { wm.removeView(colorBox); } catch (Exception e) { }
+                      colorOpen = false;
+                      return;
+                  }
+                  wheel.setColor(dv.getColor());
+                  bright.setProgress(Math.round(wheel.getValue() * 100));
+                  sizeBar.setProgress(Math.round(dv.getFrac(dv.getTool() == 3 ? 0 : dv.getTool()) * 100));
+                  dot.invalidate();
+                  wm.addView(colorBox, centered());
+                  colorOpen = true;
+              }
+
+              private void closeMenu() {
+                  if (menuBox != null) {
+                      try { wm.removeView(menuBox); } catch (Exception e) { }
+                      menuBox = null;
+                  }
+              }
+
+              private void menuRow(LinearLayout box, Button[] out, String l1, final Runnable r1, String l2, final Runnable r2) {
+                  LinearLayout row = new LinearLayout(this);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  Button a = newBtn(l1, 13);
+                  Button b = newBtn(l2, 13);
+                  a.setOnClickListener(v -> r1.run());
+                  b.setOnClickListener(v -> r2.run());
+                  LinearLayout.LayoutParams pa = new LinearLayout.LayoutParams(dp(120), dp(42));
+                  pa.setMargins(dp(3), dp(3), dp(3), dp(3));
+                  LinearLayout.LayoutParams pb = new LinearLayout.LayoutParams(dp(120), dp(42));
+                  pb.setMargins(dp(3), dp(3), dp(3), dp(3));
+                  row.addView(a, pa);
+                  row.addView(b, pb);
+                  box.addView(row);
+                  if (out != null) { out[0] = a; out[1] = b; }
+              }
+
+              private void toggleMenu() {
+                  if (menuBox != null) { closeMenu(); return; }
+                  final LinearLayout box = panel("Menu");
+                  menuBox = box;
+                  final Button[] o1 = new Button[2];
+                  final Button[] o2 = new Button[2];
+                  menuRow(box, o1, touchMode ? "Draw again" : "Use apps", () -> { closeMenu(); toggleTouch(); },
+                          "Bg: " + new String[] { "Clear", "Dark", "White" }[dv.getBgMode()],
+                          () -> { dv.cycleBg(); o1[1].setText("Bg: " + new String[] { "Clear", "Dark", "White" }[dv.getBgMode()]); });
+                  menuRow(box, o2, "Grid: " + new String[] { "Off", "Grid", "Lines" }[dv.getPattern()],
+                          () -> { dv.cycleGrid(); o2[0].setText("Grid: " + new String[] { "Off", "Grid", "Lines" }[dv.getPattern()]); },
+                          "Save", () -> { closeMenu(); toggleSave(); });
+                  menuRow(box, null, "Delete selected", () -> { dv.deleteSelection(); closeMenu(); },
+                          "Clear page", () -> { dv.clear(); closeMenu(); });
+                  menuRow(box, null, "Close menu", () -> closeMenu(), "Exit Annot8", () -> stopSelf());
+                  wm.addView(box, centered());
+              }
+
+              private void toggleTouch() {
+                  touchMode = !touchMode;
+                  if (touchMode) dvp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                  else dvp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                  wm.updateViewLayout(dv, dvp);
+              }
+
+              private void toggleSave() {
+                  if (saveBox != null) {
+                      try { wm.removeView(saveBox); } catch (Exception e) { }
+                      saveBox = null;
+                      return;
+                  }
+                  LinearLayout box = panel("Save as");
                   String[] fmts = { "png", "jpg", "pdf" };
                   String[] names = { "PNG", "JPG", "PDF" };
                   for (int i = 0; i < 3; i++) {
                       final String f = fmts[i];
                       Button b = newBtn(names[i], 14);
                       b.setBackground(round(0xFF4DA3FF, dp(14)));
-                      b.setOnClickListener(v -> { toggleSavePicker(); save(f); });
+                      b.setOnClickListener(v -> { toggleSave(); save(f); });
                       box.addView(b, lp(dp(170), dp(44)));
                   }
                   Button cancel = newBtn("Cancel", 14);
-                  cancel.setOnClickListener(v -> toggleSavePicker());
+                  cancel.setOnClickListener(v -> toggleSave());
                   box.addView(cancel, lp(dp(170), dp(44)));
-                  WindowManager.LayoutParams pp = new WindowManager.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, type,
-                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                          PixelFormat.TRANSLUCENT);
-                  pp.gravity = Gravity.CENTER;
-                  wm.addView(box, pp);
-                  savePicker = box;
+                  wm.addView(box, centered());
+                  saveBox = box;
               }
 
               private void save(String fmt) {
@@ -779,138 +1102,6 @@ jobs:
                   }
               }
 
-              private void addHandle() {
-                  TextView hdr = new TextView(this);
-                  hdr.setText("\u2261");
-                  hdr.setTextSize(22);
-                  hdr.setTextColor(Color.WHITE);
-                  hdr.setGravity(Gravity.CENTER);
-                  hdr.setBackground(round(0x22FFFFFF, dp(14)));
-                  hdr.setOnTouchListener(new View.OnTouchListener() {
-                      private float sx, sy;
-                      private int ox, oy;
-                      private boolean moved;
-                      public boolean onTouch(View v, MotionEvent e) {
-                          switch (e.getActionMasked()) {
-                              case MotionEvent.ACTION_DOWN:
-                                  sx = e.getRawX(); sy = e.getRawY();
-                                  ox = barp.x; oy = barp.y;
-                                  moved = false;
-                                  return true;
-                              case MotionEvent.ACTION_MOVE:
-                                  float mx = e.getRawX() - sx, my = e.getRawY() - sy;
-                                  if (Math.abs(mx) > dp(6) || Math.abs(my) > dp(6)) moved = true;
-                                  if (moved) {
-                                      barp.x = Math.max(0, (int) (ox + mx));
-                                      barp.y = Math.max(0, (int) (oy + my));
-                                      wm.updateViewLayout(bar, barp);
-                                  }
-                                  return true;
-                              case MotionEvent.ACTION_UP:
-                                  if (!moved) toggleCollapse();
-                                  return true;
-                          }
-                          return false;
-                      }
-                  });
-                  bar.addView(hdr, lp(dp(76), dp(32)));
-              }
-
-              private void toggleCollapse() {
-                  collapsed = !collapsed;
-                  for (int i = 1; i < bar.getChildCount(); i++) {
-                      bar.getChildAt(i).setVisibility(collapsed ? View.GONE : View.VISIBLE);
-                  }
-              }
-
-              private void selectTool(int t) {
-                  dv.setTool(t);
-                  for (int i = 0; i < 3; i++) {
-                      toolBtns[i].setBackground(round(i == t ? 0xCC4DA3FF : 0x33FFFFFF, dp(14)));
-                  }
-                  sizeBar.setProgress(Math.round(dv.getFrac(t) * 100));
-                  dot.invalidate();
-              }
-
-              private void applyColor(int c) {
-                  dv.setColor(c);
-                  colorBtn.setBackground(round(c, dp(14)));
-                  double lum = Color.red(c) * 0.299 + Color.green(c) * 0.587 + Color.blue(c) * 0.114;
-                  colorBtn.setTextColor(lum > 150 ? Color.BLACK : Color.WHITE);
-                  selectTool(dv.getTool());
-              }
-
-              private void toggleTouch() {
-                  touchMode = !touchMode;
-                  if (touchMode) dvp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-                  else dvp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-                  wm.updateViewLayout(dv, dvp);
-                  touchBtn.setText(touchMode ? "Draw" : "Touch");
-                  touchBtn.setBackground(round(touchMode ? 0xCC2E9E4F : 0x33FFFFFF, dp(14)));
-              }
-
-              private void toggleColorPicker() {
-                  if (picker != null) {
-                      try { wm.removeView(picker); } catch (Exception e) { }
-                      picker = null;
-                      return;
-                  }
-                  LinearLayout box = new LinearLayout(this);
-                  box.setOrientation(LinearLayout.VERTICAL);
-                  box.setGravity(Gravity.CENTER_HORIZONTAL);
-                  GradientDrawable bg = round(0xEE1B1F24, dp(24));
-                  bg.setStroke(dp(1), 0x44FFFFFF);
-                  box.setBackground(bg);
-                  box.setPadding(dp(14), dp(12), dp(14), dp(12));
-
-                  TextView title = new TextView(this);
-                  title.setText("Pick a color");
-                  title.setTextColor(Color.WHITE);
-                  title.setTextSize(14);
-                  box.addView(title);
-
-                  final ColorWheelView wheel = new ColorWheelView(this);
-                  wheel.setColor(dv.getColor());
-                  wheel.setListener(c -> applyColor(c));
-                  box.addView(wheel, new LinearLayout.LayoutParams(dp(230), dp(230)));
-
-                  TextView bl = new TextView(this);
-                  bl.setText("Brightness");
-                  bl.setTextColor(0xFFB8C2CC);
-                  bl.setTextSize(12);
-                  box.addView(bl);
-
-                  SeekBar bright = new SeekBar(this);
-                  bright.setMax(100);
-                  bright.setProgress(Math.round(wheel.getValue() * 100));
-                  bright.setProgressTintList(ColorStateList.valueOf(0xFF4DA3FF));
-                  bright.setThumbTintList(ColorStateList.valueOf(0xFF4DA3FF));
-                  bright.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                      public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                          if (fromUser) wheel.setValue(p / 100f);
-                      }
-                      public void onStartTrackingTouch(SeekBar sb) { }
-                      public void onStopTrackingTouch(SeekBar sb) { }
-                  });
-                  box.addView(bright, new LinearLayout.LayoutParams(dp(230), dp(34)));
-
-                  Button done = new Button(this);
-                  done.setText("Done");
-                  done.setAllCaps(false);
-                  done.setTextColor(Color.WHITE);
-                  done.setBackground(round(0xFF4DA3FF, dp(14)));
-                  done.setOnClickListener(v -> toggleColorPicker());
-                  box.addView(done, new LinearLayout.LayoutParams(dp(230), dp(44)));
-
-                  WindowManager.LayoutParams pp = new WindowManager.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, type,
-                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                          PixelFormat.TRANSLUCENT);
-                  pp.gravity = Gravity.CENTER;
-                  wm.addView(box, pp);
-                  picker = box;
-              }
-
               private int dp(int v) {
                   return (int) (v * getResources().getDisplayMetrics().density);
               }
@@ -925,7 +1116,7 @@ jobs:
                       b = new Notification.Builder(this);
                   }
                   b.setContentTitle("Annot8 is on");
-                  b.setContentText("Use Exit in the toolbar to close it");
+                  b.setContentText("Open More, then Exit Annot8 to close it");
                   b.setSmallIcon(android.R.drawable.ic_menu_edit);
                   return b.build();
               }
@@ -934,8 +1125,9 @@ jobs:
               public void onDestroy() {
                   try { wm.removeView(bar); } catch (Exception e) { }
                   try { wm.removeView(dv); } catch (Exception e) { }
-                  if (picker != null) { try { wm.removeView(picker); } catch (Exception e) { } }
-                  if (savePicker != null) { try { wm.removeView(savePicker); } catch (Exception e) { } }
+                  if (colorOpen) { try { wm.removeView(colorBox); } catch (Exception e) { } }
+                  closeMenu();
+                  if (saveBox != null) { try { wm.removeView(saveBox); } catch (Exception e) { } }
                   super.onDestroy();
               }
           }
