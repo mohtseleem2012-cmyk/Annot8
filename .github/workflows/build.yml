@@ -350,6 +350,7 @@ jobs:
           package com.example.boardoverlay;
 
           import android.content.Context;
+          import android.graphics.Bitmap;
           import android.graphics.Canvas;
           import android.graphics.Color;
           import android.graphics.Paint;
@@ -370,13 +371,18 @@ jobs:
               private Stroke cur;
               private int color = Color.RED;
               private int tool = 0; // 0 pen, 1 marker, 2 eraser
+              private int bgMode = 0; // 0 clear, 1 dark, 2 white
+              private int pattern = 0; // 0 none, 1 grid, 2 lines
+              private final float dens;
               private final float[] mn;
               private final float[] mx;
               private final float[] fr = { 0.15f, 0.2f, 0.25f };
+              private final Paint gp = new Paint();
 
               public DrawView(Context c) {
                   super(c);
                   float d = c.getResources().getDisplayMetrics().density;
+                  dens = d;
                   mn = new float[] { 1 * d, 6 * d, 8 * d };
                   mx = new float[] { 24 * d, 48 * d, 70 * d };
                   setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -391,6 +397,10 @@ jobs:
               public float widthPx() { return mn[tool] + fr[tool] * (mx[tool] - mn[tool]); }
               public void undo() { if (!strokes.isEmpty()) { strokes.remove(strokes.size() - 1); invalidate(); } }
               public void clear() { strokes.clear(); invalidate(); }
+              public void cycleBg() { bgMode = (bgMode + 1) % 3; invalidate(); }
+              public void cycleGrid() { pattern = (pattern + 1) % 3; invalidate(); }
+              public int getBgMode() { return bgMode; }
+              public int getPattern() { return pattern; }
 
               private Paint makePaint() {
                   Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -409,11 +419,36 @@ jobs:
                   return p;
               }
 
-              @Override
-              protected void onDraw(Canvas canvas) {
+              private void drawPattern(Canvas c, int w, int h) {
+                  if (pattern == 0) return;
+                  gp.setStrokeWidth(Math.max(1f, dens));
+                  gp.setColor(bgMode == 2 ? 0x33000000 : (bgMode == 1 ? 0x30FFFFFF : 0x55808080));
+                  float step = 32 * dens;
+                  for (float y = step; y < h; y += step) c.drawLine(0, y, w, y, gp);
+                  if (pattern == 1) for (float x = step; x < w; x += step) c.drawLine(x, 0, x, h, gp);
+              }
+
+              private void paintAll(Canvas canvas, int w, int h) {
+                  if (bgMode == 1) canvas.drawColor(0xFF14181D);
+                  else if (bgMode == 2) canvas.drawColor(Color.WHITE);
+                  drawPattern(canvas, w, h);
                   int sc = canvas.saveLayer(null, null);
                   for (Stroke s : strokes) canvas.drawPath(s.path, s.paint);
                   canvas.restoreToCount(sc);
+              }
+
+              public Bitmap capture(boolean opaque) {
+                  int w = Math.max(1, getWidth()), h = Math.max(1, getHeight());
+                  Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                  Canvas c = new Canvas(b);
+                  if (opaque && bgMode == 0) c.drawColor(Color.WHITE);
+                  paintAll(c, w, h);
+                  return b;
+              }
+
+              @Override
+              protected void onDraw(Canvas canvas) {
+                  paintAll(canvas, getWidth(), getHeight());
               }
 
               @Override
@@ -445,6 +480,16 @@ jobs:
           package com.example.boardoverlay;
 
           import android.app.Notification;
+          import android.content.ContentValues;
+          import android.graphics.Bitmap;
+          import android.graphics.pdf.PdfDocument;
+          import android.net.Uri;
+          import android.os.Environment;
+          import android.provider.MediaStore;
+          import android.widget.Toast;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.OutputStream;
           import android.app.NotificationChannel;
           import android.app.NotificationManager;
           import android.app.Service;
@@ -472,6 +517,9 @@ jobs:
               private DrawView dv;
               private LinearLayout bar;
               private LinearLayout picker;
+              private LinearLayout savePicker;
+              private Button bgBtn;
+              private Button gridBtn;
               private WindowManager.LayoutParams dvp;
               private WindowManager.LayoutParams barp;
               private int type;
@@ -568,9 +616,10 @@ jobs:
                   });
                   bar.addView(sizeBar, lp(dp(76), dp(30)));
 
-                  add("Undo", () -> dv.undo());
-                  add("Clear", () -> dv.clear());
-                  add("Exit", () -> stopSelf());
+                  addPair("Undo", () -> dv.undo(), "Clear", () -> dv.clear());
+                  bgBtn = add("Bg: Clear", () -> cycleBg());
+                  gridBtn = add("Grid: Off", () -> cycleGrid());
+                  addPair("Save", () -> toggleSavePicker(), "Exit", () -> stopSelf());
                   wm.addView(bar, barp);
                   applyColor(dv.getColor());
               }
@@ -603,6 +652,131 @@ jobs:
                   b.setOnClickListener(v -> action.run());
                   bar.addView(b, lp(dp(76), dp(38)));
                   return b;
+              }
+
+              private Button newBtn(String label, int sp) {
+                  Button b = new Button(this);
+                  b.setText(label);
+                  b.setAllCaps(false);
+                  b.setTextSize(sp);
+                  b.setTextColor(Color.WHITE);
+                  b.setPadding(0, 0, 0, 0);
+                  b.setMinWidth(0);
+                  b.setMinHeight(0);
+                  b.setMinimumWidth(0);
+                  b.setMinimumHeight(0);
+                  b.setBackground(round(0x33FFFFFF, dp(14)));
+                  return b;
+              }
+
+              private void addPair(String l1, final Runnable r1, String l2, final Runnable r2) {
+                  LinearLayout row = new LinearLayout(this);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  Button a = newBtn(l1, 10);
+                  Button b = newBtn(l2, 10);
+                  a.setOnClickListener(v -> r1.run());
+                  b.setOnClickListener(v -> r2.run());
+                  LinearLayout.LayoutParams pa = new LinearLayout.LayoutParams(0, dp(38), 1f);
+                  pa.setMargins(0, 0, dp(2), 0);
+                  LinearLayout.LayoutParams pb = new LinearLayout.LayoutParams(0, dp(38), 1f);
+                  pb.setMargins(dp(2), 0, 0, 0);
+                  row.addView(a, pa);
+                  row.addView(b, pb);
+                  bar.addView(row, lp(dp(76), dp(38)));
+              }
+
+              private void cycleBg() {
+                  dv.cycleBg();
+                  bgBtn.setText("Bg: " + new String[] { "Clear", "Dark", "White" }[dv.getBgMode()]);
+              }
+
+              private void cycleGrid() {
+                  dv.cycleGrid();
+                  gridBtn.setText("Grid: " + new String[] { "Off", "Grid", "Lines" }[dv.getPattern()]);
+              }
+
+              private void toggleSavePicker() {
+                  if (savePicker != null) {
+                      try { wm.removeView(savePicker); } catch (Exception e) { }
+                      savePicker = null;
+                      return;
+                  }
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setGravity(Gravity.CENTER_HORIZONTAL);
+                  GradientDrawable bg = round(0xEE1B1F24, dp(24));
+                  bg.setStroke(dp(1), 0x44FFFFFF);
+                  box.setBackground(bg);
+                  box.setPadding(dp(16), dp(12), dp(16), dp(12));
+                  TextView title = new TextView(this);
+                  title.setText("Save as");
+                  title.setTextColor(Color.WHITE);
+                  title.setTextSize(15);
+                  box.addView(title);
+                  String[] fmts = { "png", "jpg", "pdf" };
+                  String[] names = { "PNG", "JPG", "PDF" };
+                  for (int i = 0; i < 3; i++) {
+                      final String f = fmts[i];
+                      Button b = newBtn(names[i], 14);
+                      b.setBackground(round(0xFF4DA3FF, dp(14)));
+                      b.setOnClickListener(v -> { toggleSavePicker(); save(f); });
+                      box.addView(b, lp(dp(170), dp(44)));
+                  }
+                  Button cancel = newBtn("Cancel", 14);
+                  cancel.setOnClickListener(v -> toggleSavePicker());
+                  box.addView(cancel, lp(dp(170), dp(44)));
+                  WindowManager.LayoutParams pp = new WindowManager.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, type,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                          PixelFormat.TRANSLUCENT);
+                  pp.gravity = Gravity.CENTER;
+                  wm.addView(box, pp);
+                  savePicker = box;
+              }
+
+              private void save(String fmt) {
+                  boolean png = fmt.equals("png");
+                  boolean pdf = fmt.equals("pdf");
+                  try {
+                      Bitmap bmp = dv.capture(!png);
+                      String name = "Annot8-" + System.currentTimeMillis() + "." + fmt;
+                      String mime = png ? "image/png" : (pdf ? "application/pdf" : "image/jpeg");
+                      OutputStream os;
+                      String where;
+                      if (Build.VERSION.SDK_INT >= 29) {
+                          ContentValues cvs = new ContentValues();
+                          cvs.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                          cvs.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                          String dir = pdf ? Environment.DIRECTORY_DOWNLOADS : Environment.DIRECTORY_PICTURES;
+                          cvs.put(MediaStore.MediaColumns.RELATIVE_PATH, dir + "/Annot8");
+                          Uri coll = pdf ? MediaStore.Downloads.EXTERNAL_CONTENT_URI : MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                          Uri u = getContentResolver().insert(coll, cvs);
+                          os = getContentResolver().openOutputStream(u);
+                          where = dir + "/Annot8";
+                      } else {
+                          File d = getExternalFilesDir(pdf ? Environment.DIRECTORY_DOCUMENTS : Environment.DIRECTORY_PICTURES);
+                          d.mkdirs();
+                          File f = new File(d, name);
+                          os = new FileOutputStream(f);
+                          where = f.getParent();
+                      }
+                      if (png) {
+                          bmp.compress(Bitmap.CompressFormat.PNG, 100, os);
+                      } else if (!pdf) {
+                          bmp.compress(Bitmap.CompressFormat.JPEG, 92, os);
+                      } else {
+                          PdfDocument doc = new PdfDocument();
+                          PdfDocument.Page pg = doc.startPage(new PdfDocument.PageInfo.Builder(bmp.getWidth(), bmp.getHeight(), 1).create());
+                          pg.getCanvas().drawBitmap(bmp, 0, 0, null);
+                          doc.finishPage(pg);
+                          doc.writeTo(os);
+                          doc.close();
+                      }
+                      os.close();
+                      Toast.makeText(this, "Saved to " + where, Toast.LENGTH_LONG).show();
+                  } catch (Exception e) {
+                      Toast.makeText(this, "Could not save", Toast.LENGTH_LONG).show();
+                  }
               }
 
               private void addHandle() {
@@ -761,6 +935,7 @@ jobs:
                   try { wm.removeView(bar); } catch (Exception e) { }
                   try { wm.removeView(dv); } catch (Exception e) { }
                   if (picker != null) { try { wm.removeView(picker); } catch (Exception e) { } }
+                  if (savePicker != null) { try { wm.removeView(savePicker); } catch (Exception e) { } }
                   super.onDestroy();
               }
           }
