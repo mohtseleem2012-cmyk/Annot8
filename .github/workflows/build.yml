@@ -235,8 +235,8 @@ jobs:
                   applicationId 'com.example.boardoverlay'
                   minSdk 21
                   targetSdk 33
-                  versionCode 1
-                  versionName '1.0'
+                  versionCode 14
+                  versionName '1.4'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_1_8
@@ -327,6 +327,11 @@ jobs:
                       public void onClick(View v) { stopService(new Intent(MainActivity.this, OverlayService.class)); }
                   });
                   l.addView(title);
+                  TextView ver = new TextView(this);
+                  ver.setText("Version 1.4");
+                  ver.setTextColor(0xFF6F7C89);
+                  ver.setTextSize(13);
+                  l.addView(ver);
                   l.addView(t);
                   l.addView(start);
                   l.addView(stop);
