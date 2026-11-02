@@ -235,8 +235,8 @@ jobs:
                   applicationId 'com.example.boardoverlay'
                   minSdk 21
                   targetSdk 33
-                  versionCode 14
-                  versionName '1.4'
+                  versionCode 15
+                  versionName '1.5'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_1_8
@@ -328,7 +328,7 @@ jobs:
                   });
                   l.addView(title);
                   TextView ver = new TextView(this);
-                  ver.setText("Version 1.4");
+                  ver.setText("Version 1.5");
                   ver.setTextColor(0xFF6F7C89);
                   ver.setTextSize(13);
                   l.addView(ver);
@@ -1033,98 +1033,8 @@ jobs:
               }
 
               // ---------------- Floating calculator ----------------
-              private LinearLayout calcView;
+              private CalcPanel calcPanel;
               private WindowManager.LayoutParams calcLp;
-              private TextView calcExpr;
-              private TextView calcRes;
-              private TextView calcTitle;
-              private final java.util.ArrayList<Button> calcBtns = new java.util.ArrayList<Button>();
-              private String calcStr = "";
-              private boolean degMode = true;
-              private boolean justEval = false;
-
-              static class Parser {
-                  private final String s;
-                  private final boolean deg;
-                  private int p = 0;
-                  Parser(String s, boolean deg) { this.s = s; this.deg = deg; }
-                  double parse() {
-                      double v = expr();
-                      if (p < s.length()) throw new RuntimeException("x");
-                      return v;
-                  }
-                  private char peek() { return p < s.length() ? s.charAt(p) : '\0'; }
-                  private boolean eat(char c) { if (peek() == c) { p++; return true; } return false; }
-                  private double expr() {
-                      double v = term();
-                      while (true) {
-                          if (eat('+')) v += term();
-                          else if (eat('-') || eat('\u2212')) v -= term();
-                          else return v;
-                      }
-                  }
-                  private boolean startsPrimary() {
-                      char c = peek();
-                      return c == '(' || c == '\u03C0' || c == 'e' || c == 's' || c == 'c' || c == 't' || c == 'l' || c == '\u221A';
-                  }
-                  private double term() {
-                      double v = unary();
-                      while (true) {
-                          if (eat('*') || eat('\u00D7')) v *= unary();
-                          else if (eat('/') || eat('\u00F7')) v /= unary();
-                          else if (startsPrimary()) v *= unary();
-                          else return v;
-                      }
-                  }
-                  private double unary() {
-                      if (eat('-') || eat('\u2212')) return -unary();
-                      if (eat('+')) return unary();
-                      return power();
-                  }
-                  private double power() {
-                      double b = postfix();
-                      if (eat('^')) return Math.pow(b, unary());
-                      return b;
-                  }
-                  private double postfix() {
-                      double v = primary();
-                      while (true) {
-                          if (eat('!')) v = fact(v);
-                          else if (eat('%')) v = v / 100.0;
-                          else return v;
-                      }
-                  }
-                  private double fact(double v) {
-                      if (v < 0 || v != Math.floor(v) || v > 170) throw new RuntimeException("x");
-                      double r = 1;
-                      for (int i = 2; i <= (int) v; i++) r *= i;
-                      return r;
-                  }
-                  private double rad(double v) { return deg ? Math.toRadians(v) : v; }
-                  private double primary() {
-                      if (eat('(')) { double v = expr(); eat(')'); return v; }
-                      if (eat('\u03C0')) return Math.PI;
-                      if (eat('e')) return Math.E;
-                      if (eat('\u221A')) return Math.sqrt(primary());
-                      if (s.startsWith("sin", p)) { p += 3; return Math.sin(rad(primary())); }
-                      if (s.startsWith("cos", p)) { p += 3; return Math.cos(rad(primary())); }
-                      if (s.startsWith("tan", p)) { p += 3; return Math.tan(rad(primary())); }
-                      if (s.startsWith("log", p)) { p += 3; return Math.log10(primary()); }
-                      if (s.startsWith("ln", p)) { p += 2; return Math.log(primary()); }
-                      int st = p;
-                      while (Character.isDigit(peek()) || peek() == '.') p++;
-                      if (st == p) throw new RuntimeException("x");
-                      return Double.parseDouble(s.substring(st, p));
-                  }
-              }
-
-              private String fmt(double v) {
-                  if (Double.isNaN(v) || Double.isInfinite(v)) throw new RuntimeException("x");
-                  if (Math.abs(v) < 1e-12) v = 0;
-                  java.text.DecimalFormat df = new java.text.DecimalFormat("0.##########",
-                          java.text.DecimalFormatSymbols.getInstance(java.util.Locale.US));
-                  return df.format(v);
-              }
 
               private class MoveResize implements View.OnTouchListener {
                   private float sx, sy, d0;
@@ -1144,7 +1054,7 @@ jobs:
                               if (mode == 1) {
                                   calcLp.x = Math.max(0, (int) (ox + e.getRawX() - sx));
                                   calcLp.y = Math.max(0, (int) (oy + e.getRawY() - sy));
-                                  wm.updateViewLayout(calcView, calcLp);
+                                  wm.updateViewLayout(calcPanel, calcLp);
                               } else if (mode == 2 && e.getPointerCount() >= 2 && d0 > 0) {
                                   resizeCalc((int) (w0 * dist(e) / d0));
                               }
@@ -1161,185 +1071,49 @@ jobs:
                   }
               }
 
-              private void resizeCalc(int w) {
-                  if (calcView == null) return;
-                  int maxW = (int) (getResources().getDisplayMetrics().widthPixels * 0.9f);
-                  w = Math.max(dp(220), Math.min(maxW, w));
-                  calcLp.width = w;
-                  calcLp.height = (int) (w * 1.5f);
-                  wm.updateViewLayout(calcView, calcLp);
-                  scaleCalc();
+              private class GripListener implements View.OnTouchListener {
+                  private float sx;
+                  private int w0;
+                  public boolean onTouch(View v, MotionEvent e) {
+                      switch (e.getActionMasked()) {
+                          case MotionEvent.ACTION_DOWN:
+                              sx = e.getRawX(); w0 = calcLp.width;
+                              return true;
+                          case MotionEvent.ACTION_MOVE:
+                              resizeCalc((int) (w0 + e.getRawX() - sx));
+                              return true;
+                      }
+                      return true;
+                  }
               }
 
-              private void scaleCalc() {
-                  float w = calcLp.width;
-                  for (Button b : calcBtns) b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.058f);
-                  calcExpr.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.05f);
-                  calcRes.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.085f);
-                  calcTitle.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.045f);
+              private void resizeCalc(int w) {
+                  if (calcPanel == null) return;
+                  int maxW = (int) (getResources().getDisplayMetrics().widthPixels * 0.9f);
+                  w = Math.max(dp(200), Math.min(maxW, w));
+                  calcLp.width = w;
+                  calcLp.height = (int) (w * 2.0f);
+                  wm.updateViewLayout(calcPanel, calcLp);
+                  calcPanel.scale(w);
               }
 
               private void closeCalculator() {
-                  if (calcView != null) {
-                      try { wm.removeView(calcView); } catch (Exception e) { }
-                      calcView = null;
-                      calcBtns.clear();
+                  if (calcPanel != null) {
+                      try { wm.removeView(calcPanel); } catch (Exception e) { }
+                      calcPanel = null;
                   }
-              }
-
-              private void key(String ins, Button b) {
-                  boolean op = ins.equals("+") || ins.equals("\u2212") || ins.equals("\u00D7") || ins.equals("\u00F7")
-                          || ins.equals("^") || ins.equals("!") || ins.equals("%");
-                  if (ins.equals("C")) {
-                      calcStr = "";
-                      justEval = false;
-                  } else if (ins.equals("DEL")) {
-                      String[] toks = { "sin(", "cos(", "tan(", "log(", "ln(", "\u221A(" };
-                      int cut = 1;
-                      for (String t : toks) if (calcStr.endsWith(t)) { cut = t.length(); break; }
-                      calcStr = calcStr.length() >= cut ? calcStr.substring(0, calcStr.length() - cut) : "";
-                      justEval = false;
-                  } else if (ins.equals("DEG")) {
-                      degMode = !degMode;
-                      b.setText(degMode ? "Deg" : "Rad");
-                  } else if (ins.equals("=")) {
-                      try {
-                          calcStr = fmt(new Parser(calcStr, degMode).parse());
-                          justEval = true;
-                          calcRes.setText("");
-                          calcExpr.setText(calcStr);
-                      } catch (Exception e) {
-                          calcRes.setText("Error");
-                      }
-                      return;
-                  } else {
-                      if (justEval && !op) calcStr = "";
-                      justEval = false;
-                      calcStr += ins;
-                  }
-                  calcExpr.setText(calcStr);
-                  String prev = "";
-                  if (calcStr.length() > 0) {
-                      try {
-                          prev = fmt(new Parser(calcStr, degMode).parse());
-                          if (prev.equals(calcStr)) prev = "";
-                      } catch (Exception e) {
-                          prev = "";
-                      }
-                  }
-                  calcRes.setText(prev);
               }
 
               private void toggleCalculator() {
-                  if (calcView != null) { closeCalculator(); return; }
-                  calcStr = "";
-                  justEval = false;
-                  final LinearLayout root = new LinearLayout(this);
-                  root.setOrientation(LinearLayout.VERTICAL);
-                  GradientDrawable g = round(0xEE1B1F24, dp(22));
-                  g.setStroke(dp(1), 0x44FFFFFF);
-                  root.setBackground(g);
-                  root.setPadding(dp(8), dp(6), dp(8), dp(6));
-                  final MoveResize mr = new MoveResize();
-
-                  LinearLayout head = new LinearLayout(this);
-                  head.setOrientation(LinearLayout.HORIZONTAL);
-                  head.setGravity(Gravity.CENTER_VERTICAL);
-                  calcTitle = new TextView(this);
-                  calcTitle.setText("\u2261  Calculator");
-                  calcTitle.setTextColor(0xFFB8C2CC);
-                  head.addView(calcTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-                  Button x = newBtn("\u2715", 12);
-                  x.setOnClickListener(v -> closeCalculator());
-                  head.addView(x, new LinearLayout.LayoutParams(dp(36), dp(30)));
-                  head.setOnTouchListener(mr);
-                  root.addView(head, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-                  LinearLayout disp = new LinearLayout(this);
-                  disp.setOrientation(LinearLayout.VERTICAL);
-                  calcExpr = new TextView(this);
-                  calcExpr.setTextColor(0xFFB8C2CC);
-                  calcExpr.setGravity(Gravity.END);
-                  calcExpr.setSingleLine(true);
-                  calcExpr.setEllipsize(android.text.TextUtils.TruncateAt.START);
-                  calcRes = new TextView(this);
-                  calcRes.setTextColor(Color.WHITE);
-                  calcRes.setGravity(Gravity.END);
-                  calcRes.setSingleLine(true);
-                  calcRes.setMinHeight(dp(30));
-                  disp.addView(calcExpr, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                  disp.addView(calcRes, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                  disp.setOnTouchListener(mr);
-                  root.addView(disp, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-                  String[][] rows = {
-                          { "Deg", "sin", "cos", "tan", "DEL" },
-                          { "ln", "log", "\u221A", "^", "C" },
-                          { "\u03C0", "e", "(", ")", "\u00F7" },
-                          { "7", "8", "9", "%", "\u00D7" },
-                          { "4", "5", "6", "!", "\u2212" },
-                          { "1", "2", "3", ".", "+" },
-                          { "0", "=" } };
-                  String funcs = " sin cos tan ln log \u221A ";
-                  String ops = " \u00F7 \u00D7 \u2212 + ^ % ! ";
-                  calcBtns.clear();
-                  for (String[] row : rows) {
-                      LinearLayout r = new LinearLayout(this);
-                      r.setOrientation(LinearLayout.HORIZONTAL);
-                      for (String lab : row) {
-                          String ins = lab;
-                          if (funcs.contains(" " + lab + " ")) ins = lab + "(";
-                          if (lab.equals("Deg")) ins = "DEG";
-                          final String fin = ins;
-                          final Button b = newBtn(lab, 14);
-                          calcBtns.add(b);
-                          int col = 0x22FFFFFF;
-                          if (ops.contains(" " + lab + " ")) col = 0x884DA3FF;
-                          else if (lab.equals("=")) col = 0xFF4DA3FF;
-                          else if (lab.equals("C") || lab.equals("DEL")) col = 0x88E53935;
-                          else if (Character.isDigit(lab.charAt(0)) || lab.equals(".")) col = 0x55FFFFFF;
-                          b.setBackground(round(col, dp(12)));
-                          b.setOnClickListener(v -> key(fin, b));
-                          float wgt = row.length == 2 ? (lab.equals("0") ? 2f : 3f) : 1f;
-                          LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, wgt);
-                          p.setMargins(dp(2), dp(2), dp(2), dp(2));
-                          r.addView(b, p);
-                      }
-                      root.addView(r, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-                  }
-
-                  final TextView grip = new TextView(this);
-                  grip.setText("\u25E2");
-                  grip.setTextColor(0xFF8FA3B8);
-                  grip.setTextSize(20);
-                  grip.setGravity(Gravity.CENTER);
-                  grip.setOnTouchListener(new View.OnTouchListener() {
-                      private float sx;
-                      private int w0;
-                      public boolean onTouch(View v, MotionEvent e) {
-                          switch (e.getActionMasked()) {
-                              case MotionEvent.ACTION_DOWN:
-                                  sx = e.getRawX(); w0 = calcLp.width;
-                                  return true;
-                              case MotionEvent.ACTION_MOVE:
-                                  resizeCalc((int) (w0 + e.getRawX() - sx));
-                                  return true;
-                          }
-                          return true;
-                      }
-                  });
-                  LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(dp(40), dp(26));
-                  gp.gravity = Gravity.END;
-                  root.addView(grip, gp);
-
-                  calcLp = new WindowManager.LayoutParams(dp(300), dp(450), type,
+                  if (calcPanel != null) { closeCalculator(); return; }
+                  calcPanel = new CalcPanel(this, new MoveResize(), new GripListener(), () -> closeCalculator());
+                  calcLp = new WindowManager.LayoutParams(dp(270), dp(540), type,
                           WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT);
                   calcLp.gravity = Gravity.TOP | Gravity.LEFT;
                   calcLp.x = dp(120);
-                  calcLp.y = dp(40);
-                  calcView = root;
-                  wm.addView(root, calcLp);
-                  scaleCalc();
+                  calcLp.y = dp(20);
+                  wm.addView(calcPanel, calcLp);
+                  calcPanel.scale(calcLp.width);
               }
 
               private void toggleTouch() {
@@ -1535,6 +1309,802 @@ jobs:
                       return true;
                   }
                   return super.onTouchEvent(e);
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/boardoverlay/CalcParser.java <<'EOF'
+          package com.example.boardoverlay;
+
+          import java.util.Map;
+
+          public class CalcParser {
+              private static final char FR = '\u2044';
+              private final String s;
+              private final boolean deg;
+              private final double ans;
+              private final Map<Character, Double> vars;
+              private int p = 0;
+
+              public CalcParser(String s, boolean deg, double ans, Map<Character, Double> vars) {
+                  this.s = s;
+                  this.deg = deg;
+                  this.ans = ans;
+                  this.vars = vars;
+              }
+
+              public double parse() {
+                  double v = expr();
+                  if (p < s.length()) throw new RuntimeException("syntax");
+                  return v;
+              }
+
+              private char peek() { return p < s.length() ? s.charAt(p) : '\0'; }
+              private boolean eat(char c) { if (peek() == c) { p++; return true; } return false; }
+              private boolean at(String t) { return s.startsWith(t, p); }
+
+              private double expr() {
+                  double v = term();
+                  while (true) {
+                      if (eat('+')) v += term();
+                      else if (eat('-') || eat('\u2212')) v -= term();
+                      else return v;
+                  }
+              }
+
+              private boolean startsPrimary() {
+                  char c = peek();
+                  return c != '\0' && "(\u03C0eABCDEFXYMRsctal\u221A\u221B".indexOf(c) >= 0;
+              }
+
+              private double term() {
+                  double v = perm();
+                  while (true) {
+                      if (eat('*') || eat('\u00D7')) v *= perm();
+                      else if (eat('/') || eat('\u00F7')) v /= perm();
+                      else if (startsPrimary()) v *= perm();
+                      else return v;
+                  }
+              }
+
+              private double perm() {
+                  double v = unary();
+                  while (true) {
+                      if (at("nPr")) { p += 3; v = nPr(v, unary()); }
+                      else if (at("nCr")) { p += 3; v = nCr(v, unary()); }
+                      else return v;
+                  }
+              }
+
+              private double unary() {
+                  if (eat('-') || eat('\u2212')) return -unary();
+                  if (eat('+')) return unary();
+                  return power();
+              }
+
+              private double power() {
+                  double b = postfix();
+                  if (eat('^')) return Math.pow(b, unary());
+                  if (at("\u02E3\u221A")) {
+                      p += 2;
+                      double radicand = unary();
+                      if (b == 0) throw new RuntimeException("math");
+                      return Math.pow(radicand, 1.0 / b);
+                  }
+                  return b;
+              }
+
+              private double postfix() {
+                  double v = primary();
+                  while (true) {
+                      if (eat('!')) v = fact(v);
+                      else if (eat('%')) v = v / 100.0;
+                      else if (eat('\u00B2')) v = v * v;
+                      else if (eat('\u00B3')) v = v * v * v;
+                      else if (at("\u207B\u00B9")) { p += 2; v = 1.0 / v; }
+                      else if (eat(FR)) v = v / primary();
+                      else return v;
+                  }
+              }
+
+              private static double fact(double v) {
+                  if (v < 0 || v != Math.floor(v) || v > 170) throw new RuntimeException("math");
+                  double r = 1;
+                  for (int i = 2; i <= (int) v; i++) r *= i;
+                  return r;
+              }
+
+              private static double nPr(double n, double r) {
+                  if (n < 0 || r < 0 || r > n || n != Math.floor(n) || r != Math.floor(r)) throw new RuntimeException("math");
+                  double out = 1;
+                  for (int i = 0; i < (int) r; i++) out *= (n - i);
+                  return out;
+              }
+
+              private static double nCr(double n, double r) {
+                  if (n < 0 || r < 0 || r > n || n != Math.floor(n) || r != Math.floor(r)) throw new RuntimeException("math");
+                  double k = Math.min(r, n - r);
+                  double out = 1;
+                  for (int i = 1; i <= (int) k; i++) out = out * (n - k + i) / i;
+                  return Math.rint(out);
+              }
+
+              private double rad(double v) { return deg ? Math.toRadians(v) : v; }
+              private double back(double v) { return deg ? Math.toDegrees(v) : v; }
+
+              private double apply(String f, double a, double b, boolean two) {
+                  switch (f) {
+                      case "sin(": return Math.sin(rad(a));
+                      case "cos(": return Math.cos(rad(a));
+                      case "tan(": return Math.tan(rad(a));
+                      case "asin(": return back(Math.asin(a));
+                      case "acos(": return back(Math.acos(a));
+                      case "atan(": return back(Math.atan(a));
+                      case "sinh(": return Math.sinh(a);
+                      case "cosh(": return Math.cosh(a);
+                      case "tanh(": return Math.tanh(a);
+                      case "log(": return Math.log10(a);
+                      case "ln(": return Math.log(a);
+                      case "logb(":
+                          if (!two) throw new RuntimeException("syntax");
+                          return Math.log(b) / Math.log(a);
+                      case "\u221A(": return Math.sqrt(a);
+                      case "\u221B(": return Math.cbrt(a);
+                      case "Abs(": return Math.abs(a);
+                      case "Rnd(": return Math.round(a * 1e9) / 1e9;
+                  }
+                  throw new RuntimeException("syntax");
+              }
+
+              private static final String[] FUNCS = { "sinh(", "cosh(", "tanh(", "asin(", "acos(", "atan(", "logb(",
+                      "sin(", "cos(", "tan(", "log(", "ln(", "\u221A(", "\u221B(", "Abs(", "Rnd(" };
+
+              private double primary() {
+                  if (eat('(')) { double v = expr(); eat(')'); return v; }
+                  if (eat('\u03C0')) return Math.PI;
+                  if (at("Ans")) { p += 3; return ans; }
+                  if (at("Ran#")) { p += 4; return Math.floor(Math.random() * 1000) / 1000.0; }
+                  for (String f : FUNCS) {
+                      if (at(f)) {
+                          p += f.length();
+                          double a = expr();
+                          double b = 0;
+                          boolean two = false;
+                          if (eat(',')) { b = expr(); two = true; }
+                          eat(')');
+                          return apply(f, a, b, two);
+                      }
+                  }
+                  char c = peek();
+                  if (eat('e')) return Math.E;
+                  if (c != '\0' && "ABCDEFXYM".indexOf(c) >= 0) {
+                      p++;
+                      Double v = vars.get(c);
+                      return v == null ? 0.0 : v.doubleValue();
+                  }
+                  int st = p;
+                  while (Character.isDigit(peek()) || peek() == '.') p++;
+                  if (st == p) throw new RuntimeException("syntax");
+                  double whole = Double.parseDouble(s.substring(st, p));
+                  if (peek() == ' ') {
+                      int save = p;
+                      p++;
+                      int n0 = p;
+                      while (Character.isDigit(peek())) p++;
+                      int n1 = p;
+                      if (n1 > n0 && eat(FR)) {
+                          int d0 = p;
+                          while (Character.isDigit(peek())) p++;
+                          if (p > d0) {
+                              double den = Double.parseDouble(s.substring(d0, p));
+                              return whole + Double.parseDouble(s.substring(n0, n1)) / den;
+                          }
+                      }
+                      p = save;
+                  }
+                  return whole;
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/boardoverlay/CalcEngine.java <<'EOF'
+          package com.example.boardoverlay;
+
+          import java.text.DecimalFormat;
+          import java.text.DecimalFormatSymbols;
+          import java.util.ArrayList;
+          import java.util.HashMap;
+          import java.util.Locale;
+          import java.util.Map;
+
+          public class CalcEngine {
+              public static final char FR = '\u2044';
+              public String expr = "";
+              public int caret = 0;
+              public String result = "";
+              public boolean shift = false;
+              public boolean alpha = false;
+              public boolean hyp = false;
+              public boolean deg = true;
+              public boolean fracOut = true;
+              public boolean mixed = false;
+              public boolean closeRequested = false;
+              public String toastMsg = null;
+              private boolean storeMode = false;
+              private boolean justEval = false;
+              private boolean hasValue = false;
+              private double lastValue = 0;
+              private double ans = 0;
+              private int hist = 0;
+              private final ArrayList<String> history = new ArrayList<String>();
+              private final Map<Character, Double> vars = new HashMap<Character, Double>();
+
+              private static final String[] TOKENS = { "sinh(", "cosh(", "tanh(", "asin(", "acos(", "atan(", "logb(",
+                      "sin(", "cos(", "tan(", "log(", "ln(", "\u221A(", "\u221B(", "Abs(", "Rnd(", "10^(", "e^(",
+                      "\u02E3\u221A", "\u207B\u00B9", "Ans", "Ran#", "nPr", "nCr" };
+
+              public String status() {
+                  StringBuilder b = new StringBuilder();
+                  if (shift) b.append("S ");
+                  if (alpha) b.append("A ");
+                  if (hyp) b.append("hyp ");
+                  if (storeMode) b.append("STO ");
+                  b.append(deg ? "D" : "R");
+                  if (mixed) b.append("  a b/c");
+                  return b.toString();
+              }
+
+              private void unavailable() { toastMsg = "Not available yet"; }
+
+              private void insert(String t, boolean continuesAns) {
+                  if (justEval) {
+                      if (continuesAns) { expr = "Ans"; caret = 3; } else { expr = ""; caret = 0; }
+                      justEval = false;
+                  }
+                  result = "";
+                  expr = expr.substring(0, caret) + t + expr.substring(caret);
+                  caret += t.length();
+              }
+
+              private void load(String s) {
+                  expr = s;
+                  caret = s.length();
+                  justEval = false;
+                  result = "";
+              }
+
+              private static char letterOf(String id) {
+                  switch (id) {
+                      case "neg": return 'A';
+                      case "dms": return 'B';
+                      case "hyp": return 'C';
+                      case "sin": return 'D';
+                      case "cos": return 'E';
+                      case "tan": return 'F';
+                      case "rp": return 'X';
+                      case "sd": return 'Y';
+                      case "mp": return 'M';
+                  }
+                  return '\0';
+              }
+
+              private double varValue(char c) {
+                  Double v = vars.get(c);
+                  return v == null ? 0.0 : v.doubleValue();
+              }
+
+              public void press(String id) {
+                  toastMsg = null;
+                  if (id.equals("SHIFT")) { shift = !shift; alpha = false; return; }
+                  if (id.equals("ALPHA")) { alpha = !alpha; shift = false; return; }
+                  boolean sh = shift, al = alpha;
+                  shift = false;
+                  alpha = false;
+                  char letter = al ? letterOf(id) : '\0';
+                  if (letter != '\0') {
+                      if (storeMode) {
+                          vars.put(letter, ans);
+                          storeMode = false;
+                          toastMsg = "Stored in " + letter;
+                      } else {
+                          insert("" + letter, false);
+                      }
+                      return;
+                  }
+                  switch (id) {
+                      case "frac": if (sh) insert(" ", false); else insert("" + FR, true); break;
+                      case "sqrt": insert(sh ? "\u221B(" : "\u221A(", false); break;
+                      case "sq": insert(sh ? "\u00B3" : "\u00B2", true); break;
+                      case "pow": insert(sh ? "\u02E3\u221A" : "^", true); break;
+                      case "log": insert(sh ? "10^(" : "log(", false); break;
+                      case "ln": insert(sh ? "e^(" : "ln(", false); break;
+                      case "inv": insert(sh ? "!" : "\u207B\u00B9", true); break;
+                      case "logb": if (sh) unavailable(); else insert("logb(", false); break;
+                      case "neg": if (sh) unavailable(); else insert("\u2212", false); break;
+                      case "hyp": if (sh) insert("Abs(", false); else hyp = true; break;
+                      case "sin": insert(sh ? "asin(" : (hyp ? "sinh(" : "sin("), false); hyp = false; break;
+                      case "cos": insert(sh ? "acos(" : (hyp ? "cosh(" : "cos("), false); hyp = false; break;
+                      case "tan": insert(sh ? "atan(" : (hyp ? "tanh(" : "tan("), false); hyp = false; break;
+                      case "rcl":
+                          if (sh) { storeMode = true; toastMsg = "Press ALPHA, then a letter key"; }
+                          alpha = true;
+                          break;
+                      case "lp": insert(sh ? "%" : "(", sh); break;
+                      case "rp": insert(sh ? "," : ")", false); break;
+                      case "sd":
+                          if (sh) mixed = !mixed; else fracOut = !fracOut;
+                          if (hasValue && justEval) { try { result = format(lastValue); } catch (Exception e) { result = "Math ERROR"; } }
+                          break;
+                      case "mp":
+                          if (sh) vars.put('M', varValue('M') - ans); else vars.put('M', varValue('M') + ans);
+                          toastMsg = "M = " + trim(varValue('M'));
+                          break;
+                      case "0": if (sh) insert("Rnd(", false); else insert("0", false); break;
+                      case "9": if (sh) { vars.clear(); toastMsg = "Memory cleared"; } else insert("9", false); break;
+                      case "1": case "2": case "3": case "4": case "5": case "6": case "7": case "8":
+                          if (sh) unavailable(); else insert(id, false);
+                          break;
+                      case "dot":
+                          if (sh) insert("Ran#", false); else if (al) unavailable(); else insert(".", false);
+                          break;
+                      case "exp10":
+                          if (sh) insert("\u03C0", false); else if (al) insert("e", false); else insert("\u00D710^", true);
+                          break;
+                      case "ans": if (sh) { deg = !deg; } else insert("Ans", false); break;
+                      case "mul": insert(sh ? "nPr" : "\u00D7", true); break;
+                      case "div": insert(sh ? "nCr" : "\u00F7", true); break;
+                      case "add": if (sh) unavailable(); else insert("+", true); break;
+                      case "sub": if (sh) unavailable(); else insert("\u2212", true); break;
+                      case "del": if (sh) unavailable(); else del(); break;
+                      case "ac":
+                          if (sh) closeRequested = true; else { expr = ""; caret = 0; result = ""; justEval = false; hyp = false; }
+                          break;
+                      case "eq": evaluate(); break;
+                      case "left": left(); break;
+                      case "right": right(); break;
+                      case "up":
+                          if (hist > 0) { hist--; load(history.get(hist)); }
+                          break;
+                      case "down":
+                          if (hist < history.size() - 1) { hist++; load(history.get(hist)); }
+                          else { hist = history.size(); load(""); }
+                          break;
+                      case "mode": if (sh) unavailable(); else deg = !deg; break;
+                      case "on":
+                          expr = ""; caret = 0; result = ""; hyp = false; storeMode = false; justEval = false;
+                          break;
+                      default: unavailable();
+                  }
+              }
+
+              private void del() {
+                  if (justEval) { justEval = false; result = ""; caret = expr.length(); }
+                  if (caret == 0) return;
+                  String leftPart = expr.substring(0, caret);
+                  int cut = 1;
+                  for (String t : TOKENS) if (leftPart.endsWith(t)) { cut = t.length(); break; }
+                  expr = leftPart.substring(0, caret - cut) + expr.substring(caret);
+                  caret -= cut;
+              }
+
+              private void left() {
+                  if (justEval) { justEval = false; result = ""; caret = expr.length(); }
+                  if (caret == 0) return;
+                  String leftPart = expr.substring(0, caret);
+                  int cut = 1;
+                  for (String t : TOKENS) if (leftPart.endsWith(t)) { cut = t.length(); break; }
+                  caret -= cut;
+              }
+
+              private void right() {
+                  if (justEval) { justEval = false; result = ""; caret = expr.length(); }
+                  if (caret >= expr.length()) return;
+                  String rest = expr.substring(caret);
+                  int cut = 1;
+                  for (String t : TOKENS) if (rest.startsWith(t)) { cut = t.length(); break; }
+                  caret += cut;
+              }
+
+              private void evaluate() {
+                  try {
+                      double v = new CalcParser(expr, deg, ans, vars).parse();
+                      String shown = format(v);
+                      lastValue = v;
+                      hasValue = true;
+                      ans = v;
+                      result = shown;
+                      history.add(expr);
+                      hist = history.size();
+                      justEval = true;
+                  } catch (Exception e) {
+                      result = "Math ERROR";
+                      justEval = false;
+                  }
+              }
+
+              private static String trim(double v) {
+                  return new DecimalFormat("0.######", DecimalFormatSymbols.getInstance(Locale.US)).format(v);
+              }
+
+              static long[] toFrac(double v) {
+                  boolean neg = v < 0;
+                  double x = Math.abs(v);
+                  long h1 = 1, h0 = 0, k1 = 0, k0 = 1;
+                  double b = x;
+                  for (int i = 0; i < 32; i++) {
+                      long a = (long) Math.floor(b);
+                      long h2 = a * h1 + h0, k2 = a * k1 + k0;
+                      h0 = h1; h1 = h2; k0 = k1; k1 = k2;
+                      if (k1 > 1000) return null;
+                      if (Math.abs(x - (double) h1 / k1) <= 1e-9 * Math.max(1.0, x)) return new long[] { neg ? -h1 : h1, k1 };
+                      double fr = b - a;
+                      if (fr < 1e-12) break;
+                      b = 1.0 / fr;
+                  }
+                  return null;
+              }
+
+              public String format(double v) {
+                  if (Double.isNaN(v) || Double.isInfinite(v)) throw new RuntimeException("math");
+                  if (Math.abs(v) < 1e-12) v = 0;
+                  if (fracOut) {
+                      long[] f = toFrac(v);
+                      if (f != null && f[1] > 1) {
+                          long n = f[0], d = f[1];
+                          if (mixed && Math.abs(n) > d) {
+                              long w = n / d;
+                              long r = Math.abs(n % d);
+                              return w + " " + r + FR + d;
+                          }
+                          return n + "" + FR + d;
+                      }
+                  }
+                  return new DecimalFormat("0.##########", DecimalFormatSymbols.getInstance(Locale.US)).format(v);
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/boardoverlay/CalcDisplay.java <<'EOF'
+          package com.example.boardoverlay;
+
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Paint;
+          import android.graphics.RectF;
+          import android.view.View;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+
+          public class CalcDisplay extends View {
+              private static final Pattern FRAC = Pattern.compile("(\\d+\\.?\\d*)\u2044(\\d+\\.?\\d*)");
+              private final Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private String expr = "";
+              private String result = "";
+              private String status = "";
+              private int caret = 0;
+              private final float dens;
+
+              public CalcDisplay(Context c) {
+                  super(c);
+                  dens = c.getResources().getDisplayMetrics().density;
+                  bg.setColor(0xFFCFDDC2);
+                  tp.setColor(0xFF1C2A1C);
+                  line.setColor(0xFF1C2A1C);
+              }
+
+              public void setState(String expr, int caret, String result, String status) {
+                  this.expr = expr;
+                  this.caret = caret;
+                  this.result = result;
+                  this.status = status;
+                  invalidate();
+              }
+
+              private float segWidth(String t, float size) {
+                  tp.setTextSize(size);
+                  Matcher m = FRAC.matcher(t);
+                  float w = 0;
+                  int pos = 0;
+                  while (m.find()) {
+                      w += tp.measureText(t.substring(pos, m.start()));
+                      tp.setTextSize(size * 0.85f);
+                      w += Math.max(tp.measureText(m.group(1)), tp.measureText(m.group(2))) + size * 0.25f;
+                      tp.setTextSize(size);
+                      pos = m.end();
+                  }
+                  w += tp.measureText(t.substring(pos));
+                  return w;
+              }
+
+              private void drawLine(Canvas c, String t, float size, float base, boolean right, int caretIdx) {
+                  float pad = 8 * dens;
+                  float total = segWidth(t, size);
+                  float x;
+                  if (right || total > getWidth() - 2 * pad) x = getWidth() - pad - total;
+                  else x = pad;
+                  float caretX = -1;
+                  Matcher m = FRAC.matcher(t);
+                  int pos = 0;
+                  while (true) {
+                      boolean found = m.find();
+                      int end = found ? m.start() : t.length();
+                      String plain = t.substring(pos, end);
+                      tp.setTextSize(size);
+                      if (caretIdx >= pos && caretIdx <= end) {
+                          caretX = x + tp.measureText(t.substring(pos, caretIdx));
+                      }
+                      c.drawText(plain, x, base, tp);
+                      x += tp.measureText(plain);
+                      if (!found) break;
+                      float fs = size * 0.85f;
+                      tp.setTextSize(fs);
+                      String n = m.group(1), d = m.group(2);
+                      float wn = tp.measureText(n), wd = tp.measureText(d);
+                      float w = Math.max(wn, wd) + size * 0.25f;
+                      float barY = base - size * 0.33f;
+                      c.drawText(n, x + (w - wn) / 2f, barY - fs * 0.12f, tp);
+                      c.drawText(d, x + (w - wd) / 2f, barY + fs * 0.8f, tp);
+                      line.setStrokeWidth(Math.max(1f, size * 0.07f));
+                      c.drawLine(x + size * 0.05f, barY, x + w - size * 0.05f, barY, line);
+                      if (caretIdx > m.start() && caretIdx < m.end()) caretX = x + w;
+                      x += w;
+                      pos = m.end();
+                      if (caretIdx == pos) caretX = x;
+                  }
+                  if (caretIdx >= 0 && caretX >= 0) {
+                      line.setStrokeWidth(Math.max(1f, dens));
+                      c.drawLine(caretX, base - size * 0.9f, caretX, base + size * 0.2f, line);
+                  }
+              }
+
+              @Override
+              protected void onDraw(Canvas c) {
+                  float h = getHeight();
+                  c.drawRoundRect(new RectF(0, 0, getWidth(), h), 6 * dens, 6 * dens, bg);
+                  tp.setTextSize(h * 0.1f);
+                  c.drawText(status, 8 * dens, h * 0.12f, tp);
+                  drawLine(c, expr, h * 0.17f, h * 0.38f, false, caret);
+                  if (result.length() > 0) drawLine(c, result, h * 0.24f, h * 0.8f, true, -1);
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/boardoverlay/CalcPanel.java <<'EOF'
+          package com.example.boardoverlay;
+
+          import android.content.Context;
+          import android.graphics.Color;
+          import android.graphics.drawable.GradientDrawable;
+          import android.text.SpannableStringBuilder;
+          import android.text.Spannable;
+          import android.text.style.ForegroundColorSpan;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import android.widget.Toast;
+          import java.util.ArrayList;
+
+          public class CalcPanel extends LinearLayout {
+              private final CalcEngine eng = new CalcEngine();
+              private final CalcDisplay disp;
+              private final ArrayList<Button> btns = new ArrayList<Button>();
+              private final ArrayList<TextView> labels = new ArrayList<TextView>();
+              private final Context ctx;
+              private final Runnable onClose;
+              private final float d;
+              private final TextView title;
+              private Button shiftBtn;
+              private Button alphaBtn;
+
+              private GradientDrawable rr(int color, float radiusDp) {
+                  GradientDrawable g = new GradientDrawable();
+                  g.setColor(color);
+                  g.setCornerRadius(radiusDp * d);
+                  return g;
+              }
+
+              private int dp(int v) { return (int) (v * d); }
+
+              public CalcPanel(Context c, View.OnTouchListener mover, View.OnTouchListener gripListener, Runnable onClose) {
+                  super(c);
+                  ctx = c;
+                  this.onClose = onClose;
+                  d = c.getResources().getDisplayMetrics().density;
+                  setOrientation(VERTICAL);
+                  GradientDrawable g = rr(0xF21A1D22, 22);
+                  g.setStroke(dp(1), 0x44FFFFFF);
+                  setBackground(g);
+                  setPadding(dp(8), dp(6), dp(8), dp(6));
+
+                  LinearLayout head = new LinearLayout(c);
+                  head.setOrientation(HORIZONTAL);
+                  head.setGravity(Gravity.CENTER_VERTICAL);
+                  title = new TextView(c);
+                  title.setText("\u2261  Calculator");
+                  title.setTextColor(0xFFB8C2CC);
+                  head.addView(title, new LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  Button x = new Button(c);
+                  x.setText("\u2715");
+                  x.setTextColor(Color.WHITE);
+                  x.setTextSize(12);
+                  x.setPadding(0, 0, 0, 0);
+                  x.setMinWidth(0);
+                  x.setMinHeight(0);
+                  x.setMinimumWidth(0);
+                  x.setMinimumHeight(0);
+                  x.setBackground(rr(0x33FFFFFF, 10));
+                  x.setOnClickListener(v -> onClose.run());
+                  head.addView(x, new LayoutParams(dp(36), dp(28)));
+                  head.setOnTouchListener(mover);
+                  addView(head, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                  disp = new CalcDisplay(c);
+                  disp.setOnTouchListener(mover);
+                  LayoutParams dlp = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 2.5f);
+                  dlp.setMargins(0, dp(4), 0, dp(4));
+                  addView(disp, dlp);
+
+                  // top block: SHIFT ALPHA | pad | MODE ON  and  CALC INTEGRAL | pad | x^-1 logb
+                  LinearLayout top = new LinearLayout(c);
+                  top.setOrientation(HORIZONTAL);
+                  LinearLayout left = block(new String[][] { { "SHIFT", "SHIFT", "", "", "s" }, { "ALPHA", "ALPHA", "", "", "s" } },
+                          new String[][] { { "calc", "CALC", "SOLVE", "=", "f" }, { "integral", "\u222B", "d/dx", ":", "f" } });
+                  LinearLayout right = block(new String[][] { { "mode", "MODE", "SETUP", "", "s" }, { "on", "ON", "", "", "s" } },
+                          new String[][] { { "inv", "x\u207B\u00B9", "x!", "", "f" }, { "logb", "log\u25A1", "\u03A3", "", "f" } });
+                  LinearLayout pad = new LinearLayout(c);
+                  pad.setOrientation(VERTICAL);
+                  pad.addView(arrows("up", "\u25B2", "down", "\u25BC"), new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+                  pad.addView(arrows("left", "\u25C0", "right", "\u25B6"), new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+                  top.addView(left, new LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2f));
+                  top.addView(pad, new LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2f));
+                  top.addView(right, new LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2f));
+                  addView(top, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 2f));
+
+                  row(new String[][] {
+                          { "frac", "a\u2044b", "a b\u2044c", "", "f" }, { "sqrt", "\u221A", "\u221B", "", "f" },
+                          { "sq", "x\u00B2", "x\u00B3", "", "f" }, { "pow", "x\u02B8", "\u02E3\u221A", "", "f" },
+                          { "log", "log", "10\u02E3", "", "f" }, { "ln", "ln", "e\u02E3", "", "f" } });
+                  row(new String[][] {
+                          { "neg", "(\u2212)", "\u2220", "A", "f" }, { "dms", "\u00B0\u2032\u2033", "\u2190", "B", "f" },
+                          { "hyp", "hyp", "Abs", "C", "f" }, { "sin", "sin", "sin\u207B\u00B9", "D", "f" },
+                          { "cos", "cos", "cos\u207B\u00B9", "E", "f" }, { "tan", "tan", "tan\u207B\u00B9", "F", "f" } });
+                  row(new String[][] {
+                          { "rcl", "RCL", "STO", "", "f" }, { "eng", "ENG", "\u2190", "i", "f" },
+                          { "lp", "(", "%", "", "f" }, { "rp", ")", ",", "X", "f" },
+                          { "sd", "S\u21D4D", "a b/c", "Y", "f" }, { "mp", "M+", "M\u2212", "M", "f" } });
+                  row(new String[][] {
+                          { "7", "7", "CONST", "", "n" }, { "8", "8", "CONV", "", "n" }, { "9", "9", "CLR", "", "n" },
+                          { "del", "DEL", "INS", "", "r" }, { "ac", "AC", "OFF", "", "r" } });
+                  row(new String[][] {
+                          { "4", "4", "MATRIX", "", "n" }, { "5", "5", "VECTOR", "", "n" }, { "6", "6", "", "", "n" },
+                          { "mul", "\u00D7", "nPr", "", "n" }, { "div", "\u00F7", "nCr", "", "n" } });
+                  row(new String[][] {
+                          { "1", "1", "STAT", "", "n" }, { "2", "2", "CMPLX", "", "n" }, { "3", "3", "BASE", "", "n" },
+                          { "add", "+", "Pol", "", "n" }, { "sub", "\u2212", "Rec", "", "n" } });
+                  row(new String[][] {
+                          { "0", "0", "Rnd", "", "n" }, { "dot", "\u2022", "Ran#", "RanInt", "n" },
+                          { "exp10", "\u00D710\u02E3", "\u03C0", "e", "n" }, { "ans", "Ans", "DRG\u25B8", "", "n" },
+                          { "eq", "=", "", "", "n" } });
+
+                  LinearLayout.LayoutParams gp = new LayoutParams(dp(40), dp(24));
+                  gp.gravity = Gravity.END;
+                  TextView grip = new TextView(c);
+                  grip.setText("\u25E2");
+                  grip.setTextColor(0xFF8FA3B8);
+                  grip.setTextSize(18);
+                  grip.setGravity(Gravity.CENTER);
+                  grip.setOnTouchListener(gripListener);
+                  addView(grip, gp);
+                  refresh();
+              }
+
+              private LinearLayout block(String[][] r1, String[][] r2) {
+                  LinearLayout b = new LinearLayout(ctx);
+                  b.setOrientation(VERTICAL);
+                  LinearLayout a = new LinearLayout(ctx);
+                  a.setOrientation(HORIZONTAL);
+                  for (String[] k : r1) a.addView(cell(k), new LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+                  LinearLayout c2 = new LinearLayout(ctx);
+                  c2.setOrientation(HORIZONTAL);
+                  for (String[] k : r2) c2.addView(cell(k), new LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+                  b.addView(a, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+                  b.addView(c2, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+                  return b;
+              }
+
+              private LinearLayout arrows(String id1, String t1, String id2, String t2) {
+                  LinearLayout r = new LinearLayout(ctx);
+                  r.setOrientation(HORIZONTAL);
+                  for (int i = 0; i < 2; i++) {
+                      final String id = i == 0 ? id1 : id2;
+                      Button b = makeButton(i == 0 ? t1 : t2, "s");
+                      b.setOnClickListener(v -> press(id));
+                      LayoutParams p = new LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+                      p.setMargins(dp(2), dp(3), dp(2), dp(3));
+                      r.addView(b, p);
+                  }
+                  return r;
+              }
+
+              private void row(String[][] keys) {
+                  LinearLayout r = new LinearLayout(ctx);
+                  r.setOrientation(HORIZONTAL);
+                  for (String[] k : keys) r.addView(cell(k), new LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+                  addView(r, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+              }
+
+              private Button makeButton(String text, String style) {
+                  Button b = new Button(ctx);
+                  b.setText(text);
+                  b.setAllCaps(false);
+                  b.setIncludeFontPadding(false);
+                  b.setPadding(0, 0, 0, 0);
+                  b.setMinWidth(0);
+                  b.setMinHeight(0);
+                  b.setMinimumWidth(0);
+                  b.setMinimumHeight(0);
+                  int bg = 0xFF2A2F36, fg = Color.WHITE;
+                  if (style.equals("n")) { bg = 0xFFEDEDED; fg = 0xFF1B1B1B; }
+                  else if (style.equals("r")) { bg = 0xFFD32F2F; fg = Color.WHITE; }
+                  else if (style.equals("s")) { bg = 0xFFD7D9DC; fg = 0xFF1B1B1B; }
+                  b.setTextColor(fg);
+                  b.setBackground(rr(bg, 9));
+                  btns.add(b);
+                  return b;
+              }
+
+              private View cell(String[] k) {
+                  final String id = k[0];
+                  LinearLayout cell = new LinearLayout(ctx);
+                  cell.setOrientation(VERTICAL);
+                  TextView lab = new TextView(ctx);
+                  lab.setGravity(Gravity.CENTER);
+                  lab.setSingleLine(true);
+                  lab.setIncludeFontPadding(false);
+                  SpannableStringBuilder sb = new SpannableStringBuilder();
+                  if (k[2].length() == 0 && k[3].length() == 0) sb.append("\u00A0");
+                  sb.append(k[2]);
+                  sb.setSpan(new ForegroundColorSpan(0xFFFFD400), 0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  if (k[3].length() > 0) {
+                      int a0 = sb.length();
+                      sb.append(k[2].length() > 0 ? " " + k[3] : k[3]);
+                      sb.setSpan(new ForegroundColorSpan(0xFF4DA3FF), a0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  }
+                  lab.setText(sb);
+                  labels.add(lab);
+                  Button b = makeButton(k[1], k[4]);
+                  b.setOnClickListener(v -> press(id));
+                  if (id.equals("SHIFT")) shiftBtn = b;
+                  if (id.equals("ALPHA")) alphaBtn = b;
+                  cell.addView(lab, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  LayoutParams bp = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+                  bp.setMargins(dp(2), 0, dp(2), dp(3));
+                  cell.addView(b, bp);
+                  return cell;
+              }
+
+              private void press(String id) {
+                  eng.press(id);
+                  if (eng.toastMsg != null) Toast.makeText(ctx, eng.toastMsg, Toast.LENGTH_SHORT).show();
+                  if (eng.closeRequested) { eng.closeRequested = false; onClose.run(); return; }
+                  refresh();
+              }
+
+              private void refresh() {
+                  disp.setState(eng.expr, eng.caret, eng.result, eng.status());
+                  if (shiftBtn != null) shiftBtn.setBackground(rr(eng.shift ? 0xFFFFD400 : 0xFFD7D9DC, 9));
+                  if (alphaBtn != null) alphaBtn.setBackground(rr(eng.alpha ? 0xFF4DA3FF : 0xFFD7D9DC, 9));
+              }
+
+              public void scale(float w) {
+                  for (Button b : btns) b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.05f);
+                  for (TextView t : labels) t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.03f);
+                  title.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.045f);
               }
           }
           EOF
